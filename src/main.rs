@@ -6,32 +6,6 @@
 #[macro_use] extern crate serde_derive;
 extern crate time;
 
-macro_rules! inherit {
-    {
-        $(#[$flag_struct:meta])* struct $child:ident : $parent:ty {
-            $($(#[$flag_field:meta])* $field:ident: $ty:ty),*
-        }
-    } => {
-        extern crate core;
-
-        $(#[$flag_struct])* struct $child {
-            _super: $parent,
-            $($(#[$flag_field])* $field: $ty),*
-        }
-
-        impl core::ops::Deref for $child {
-            type Target = $parent;
-
-            fn deref(&self) -> &$parent { &self._super }
-        }
-
-        impl core::ops::DerefMut for $child {
-            fn deref_mut(&mut self) -> &mut $parent { &mut self._super }
-        }
-    }
-}
-
-
 mod rpc;
 mod node;
 mod raft_server;

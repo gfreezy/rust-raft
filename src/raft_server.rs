@@ -1,9 +1,14 @@
+use std::collections::HashMap;
 use std::sync::{mpsc, Mutex};
+use tarpc;
+
 use ::node::{Event, RaftNode};
+use ::rpc;
 
 pub struct RaftServer {
     pub raft_node: Mutex<Option<RaftNode>>,
     noti_center: Mutex<mpsc::Receiver<Event>>,
+    peers: Mutex<HashMap<String, tarpc::Result<rpc::Client>>>,
     to_exit: bool,
 }
 
@@ -11,10 +16,12 @@ pub struct RaftServer {
 impl RaftServer {
     pub fn new(server_id: String, servers: &[&str]) -> RaftServer {
         let (sender, receiver) = mpsc::channel();
+        let peers = servers.iter().map(|s| (s.to_string(), rpc::Client::new(*s))).collect();
         RaftServer {
             raft_node: Mutex::new(Some(RaftNode::new(server_id, servers, sender))),
             noti_center: Mutex::new(receiver),
             to_exit: false,
+            peers: Mutex::new(peers),
         }
     }
 
@@ -48,7 +55,13 @@ impl RaftServer {
                         RaftNode::Candidate(_) => unreachable!(),
                         RaftNode::Leader(_) => unreachable!(),
                     }
-                }
+                },
+                Event::SendAppendEntries((peer, req)) => {
+                    _raft_node
+                },
+                Event::SendRequestVote((peer, req)) => {
+                    _raft_node
+                },
             };
             *raft_node = Some(new_raft_node);
         }
