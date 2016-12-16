@@ -5,7 +5,11 @@ authors = ["Alex.F <gfreezy@gmail.com>"]
 
 [dependencies]
 tarpc = "0.6.0"
-serde = "0.8.18"
-serde_derive = "0.8.18"
+serde = "0.8.19"
+serde_derive = "0.8.19"
 time = "0.1.35"
 itertools = "0.5.6"
+docopt = "0.6"
+chan = "0.1.18"
+rand = "0.3"
+
