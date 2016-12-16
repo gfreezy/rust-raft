@@ -4,6 +4,8 @@ version = "0.1.0"
 authors = ["Alex.F <gfreezy@gmail.com>"]
 
 [dependencies]
+log = "*"
+env_logger = "*"
 tarpc = "0.6.0"
 serde = "0.8.19"
 serde_derive = "0.8.19"
@@ -12,4 +14,3 @@ itertools = "0.5.6"
 docopt = "0.6"
 chan = "0.1.18"
 rand = "0.3"
-

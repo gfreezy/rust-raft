@@ -100,7 +100,7 @@ impl Node<Follower> {
 
 impl fmt::Display for Node<Follower> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "Node<Follower>")
+        write!(f, "Node<Follower, {}>", &self.server_id)
     }
 }
 
@@ -123,7 +123,7 @@ impl From<Node<Follower>> for Node<Candidate> {
             },
         };
         n.new_election();
-        println!("from Follower to Candidate");
+        debug!("from Follower to Candidate");
         n
     }
 }
@@ -144,7 +144,7 @@ impl From<Node<Candidate>> for Node<Follower> {
                 heartbeat_received_at: time::now_utc(),
             },
         };
-        println!("from Candidate to Follower");
+        debug!("from Candidate to Follower");
         n
     }
 }
@@ -168,7 +168,7 @@ impl From<Node<Candidate>> for Node<Leader> {
             servers: val.servers,
         };
         node.send_heartbeat();
-        println!("from Candidate to Leader");
+        debug!("from Candidate to Leader");
         node
     }
 }
@@ -189,7 +189,7 @@ impl From<Node<Leader>> for Node<Follower> {
                 heartbeat_received_at: time::now_utc(),
             },
         };
-        println!("from Leader to Follower");
+        debug!("from Leader to Follower");
         n
     }
 }
@@ -258,6 +258,14 @@ impl<T> Node<T> where Node<T>: LiveRaftNode {
     fn delete_entries_since(&mut self, index: u64) {
         self.log.truncate(index as usize);
     }
+
+    fn peers(&self) -> Vec<String> {
+        self.servers
+            .iter()
+            .filter(|server| {
+                server.as_str() != self.server_id.as_str()
+            }).cloned().collect::<Vec<String>>()
+    }
 }
 
 
@@ -278,7 +286,7 @@ impl LiveRaftNode for Node<Follower> {
             }
         }
 
-        println!("{} term: {}, vote granted: {}", self, self.current_term, vote_granted);
+        debug!("{} term: {}, vote granted: {}", self, self.current_term, vote_granted);
         rpc::VoteResp {
             term: self.current_term,
             vote_granted: vote_granted,
@@ -333,7 +341,7 @@ impl LiveRaftNode for Node<Follower> {
 
         self.apply_log();
 
-        println!("{} term: {}, on append entries", self, self.current_term);
+        debug!("{} term: {}, on append entries", self, self.current_term);
 
         rpc::AppendEntriesResp {
             term: self.current_term,
@@ -361,16 +369,12 @@ impl Node<Candidate> {
 
         self.state.votes.clear();
         self.state.votes.insert(self.server_id.to_string());
-        println!("{} new election, timeout: {}", self.current_term, election_timeout);
+        debug!("{} new election, timeout: {}", self.current_term, election_timeout);
         self.send_vote_request();
     }
 
     fn send_vote_request(&self) {
-        self.servers
-            .iter()
-            .filter(|server| {
-                server.as_str() != self.server_id.as_str()
-            })
+        self.peers().iter()
             .map(|server| {
                 let req = rpc::VoteReq {
                     term: self.current_term,
@@ -385,9 +389,9 @@ impl Node<Candidate> {
     pub fn on_receive_vote_request(&mut self, peer: &str, resp: rpc::VoteResp) {
         if resp.term > self.current_term {
             self.current_term = resp.term;
-            println!("before trigger ConvertToFollower");
+            debug!("before trigger ConvertToFollower");
             self.trigger(Event::ConvertToFollower);
-            println!("after trigger ConvertToFollower");
+            debug!("after trigger ConvertToFollower");
 
         }
         if resp.vote_granted {
@@ -398,7 +402,7 @@ impl Node<Candidate> {
 
 impl fmt::Display for Node<Candidate> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "Node<Candidate>")
+        write!(f, "Node<Candidate, {}>", &self.server_id)
     }
 }
 
@@ -406,9 +410,9 @@ impl LiveRaftNode for Node<Candidate> {
     fn on_request_vote(&mut self, req: &rpc::VoteReq) -> rpc::VoteResp {
         if req.term > self.current_term {
             self.current_term = req.term;
-            println!("before trigger");
+            debug!("before trigger");
             self.trigger(Event::ConvertToFollower);
-            println!("after trigger");
+            debug!("after trigger");
         }
 
         rpc::VoteResp {
@@ -460,9 +464,9 @@ impl LiveRaftNode for Node<Leader> {
     fn on_request_vote(&mut self, req: &rpc::VoteReq) -> rpc::VoteResp {
         if req.term > self.current_term {
             self.current_term = req.term;
-            println!("before trigger");
+            debug!("before trigger");
             self.trigger(Event::ConvertToFollower);
-            println!("after trigger");
+            debug!("after trigger");
         }
 
         rpc::VoteResp {
@@ -482,14 +486,14 @@ impl LiveRaftNode for Node<Leader> {
 
 impl fmt::Display for Node<Leader> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "Node<Leader>")
+        write!(f, "Node<Leader, {}>", &self.server_id)
     }
 }
 
 
 impl Node<Leader> {
     fn send_heartbeat(&self) {
-        for s in &self.servers {
+        for s in &self.peers() {
             self.send_append_entries_request(s);
         }
     }
@@ -497,7 +501,7 @@ impl Node<Leader> {
     fn send_append_entries_request(&self, peer: &str) {
         let last_log_index = self.last_log_index();
         let next_index = self.state.next_index.get(peer).map_or(last_log_index + 1, |i| *i);
-        println!("next_index: {}", next_index);
+        debug!("next_index: {}", next_index);
         let entries = if last_log_index >= next_index && next_index > 1 {
             self.log.iter().skip(next_index as usize - 1).cloned().collect::<Vec<rpc::Entry>>()
         } else {
@@ -517,7 +521,7 @@ impl Node<Leader> {
     }
 
     fn send_append_entries_requests(&self) {
-        self.servers.iter().filter(|s| s.as_str() != self.server_id.as_str())
+        self.peers().iter()
             .map(|server| self.send_append_entries_request(server)).collect::<Vec<()>>();
     }
 

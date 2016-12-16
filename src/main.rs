@@ -6,6 +6,8 @@
 extern crate time;
 extern crate docopt;
 extern crate rand;
+#[macro_use] extern crate log;
+extern crate env_logger;
 
 use docopt::Docopt;
 
@@ -32,6 +34,7 @@ Options:
 
 
 fn main() {
+    env_logger::init().unwrap();
     let args = Docopt::new(USAGE)
         .and_then(|d| d.parse())
         .unwrap_or_else(|e| e.exit());

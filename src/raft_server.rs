@@ -43,7 +43,7 @@ impl RaftServer {
                 noti_center.recv() -> event => {{
                     let mut raft_node = self.raft_node.lock().expect("lock raft node");
                     let _raft_node = raft_node.take().unwrap();
-                    println!("{} recv {:?}", _raft_node, event);
+                    debug!("{} recv {:?}", _raft_node, event);
                     let new_raft_node = match event {
                         Some(Event::ConvertToFollower) => {
                             match _raft_node {
@@ -75,10 +75,35 @@ impl RaftServer {
                                     RaftNode::Candidate(node)
                                 }
                                 RaftNode::Leader(mut node) => {
-                                    if let Some(c) = pool.get_client(&peer) {
+                                    debug!("send append entry: {}", &peer);
+                                    let ret = pool.get_client(&peer).and_then(|c| {
+                                        debug!("send append entry get client: {}", &peer);
                                         let resp = c.on_append_entries(req);
-                                        node.on_receive_append_entries_request(&peer, resp.expect("append entries"));
-                                    }
+                                        debug!("send append entry req: {}", &peer);
+                                        Some(match resp {
+                                            Ok(r) => {
+                                                debug!("before on_receive_append_entries_request: {}", &peer);
+                                                node.on_receive_append_entries_request(&peer, r);
+                                                Ok(())
+                                            },
+                                            Err(e) => {
+                                                debug!("send to {} error: {:?}", &peer, &e);
+                                                Err(e)
+                                            },
+                                        })
+                                    });
+                                    match ret {
+                                        Some(Err(tarpc::Error::ConnectionBroken)) => {
+                                            pool.remove_client(&peer);
+                                        },
+                                        _ => (),
+                                    };
+
+
+//                                    if let Some(c) = pool.get_client(&peer) {
+//                                        let resp = c.on_append_entries(req);
+//                                        node.on_receive_append_entries_request(&peer, resp.expect("append entries"));
+//                                    }
                                     RaftNode::Leader(node)
                                 },
                             }
@@ -89,19 +114,19 @@ impl RaftServer {
                                     RaftNode::Follower(node)
                                 },
                                 RaftNode::Candidate(mut node) => {
-                                    println!("send request vote");
+                                    debug!("send request vote: {}", &peer);
                                     let ret = pool.get_client(&peer).and_then(|c| {
-                                        println!("on_receive_vote_request get client");
+                                        debug!("on_receive_vote_request get client: {}", &peer);
                                         let resp = c.on_request_vote(req);
-                                        println!("on_receive_vote_request send req");
+                                        debug!("on_receive_vote_request send req: {}", &peer);
                                         Some(match resp {
                                             Ok(r) => {
-                                                println!("before on_receive_vote_request");
+                                                debug!("before on_receive_vote_request: {}", &peer);
                                                 node.on_receive_vote_request(&peer, r);
                                                 Ok(())
                                             },
                                             Err(e) => {
-                                                println!("send to {} error: {:?}", &peer, &e);
+                                                debug!("send to {} error: {:?}", &peer, &e);
                                                 Err(e)
                                             },
                                         })
@@ -124,6 +149,7 @@ impl RaftServer {
                     *raft_node = Some(new_raft_node);
                 }},
                 tick.recv() => {{
+                    debug!("tick");
                     let mut raft_node = self.raft_node.lock().expect("lock");
                     let _raft_node = raft_node.take().expect("take");
                     *raft_node = Some(match _raft_node {
@@ -155,7 +181,7 @@ impl ConnectionPool {
     pub fn new(addrs: Vec<String>) -> Self {
         let mut map = HashMap::new();
         for addr in &addrs {
-            let c = rpc::Client::new(addr);
+            let c = rpc::AsyncClient::new(addr);
             map.insert(addr.to_string(), c);
         }
         ConnectionPool {
@@ -163,12 +189,12 @@ impl ConnectionPool {
         }
     }
 
-    pub fn get_client(&mut self, addr: &str) -> Option<&rpc::Client> {
-        let v = self.conns.entry(addr.to_string()).or_insert(rpc::Client::new(addr));
+    pub fn get_client(&mut self, addr: &str) -> Option<&rpc::AsyncClient> {
+        let v = self.conns.entry(addr.to_string()).or_insert(rpc::AsyncClient::new(addr));
         if v.is_ok() {
             return v.as_ref().ok();
         }
-        let c = rpc::Client::new(addr);
+        let c = rpc::AsyncClient::new(addr);
         *v = c;
         v.as_ref().ok()
     }

@@ -13,9 +13,9 @@ impl RpcServer {
 
 impl rpc::Service for RpcServer {
     fn on_request_vote(&self, req: rpc::VoteReq) -> rpc::VoteResp {
-        println!("on_request_vote");
+        println!("receive on_request_vote");
         let mut raft_node = self.0.lock().unwrap();
-        println!("on_request_vote get lock");
+        println!("receive on_request_vote get lock");
 
         let resp = match *raft_node {
             Some(RaftNode::Follower(ref mut node)) => node.on_request_vote(&req),
@@ -28,9 +28,11 @@ impl rpc::Service for RpcServer {
     }
 
     fn on_append_entries(&self, req: rpc::AppendEntriesReq) -> rpc::AppendEntriesResp {
-        println!("on_append_entries");
+        println!("receive on_append_entries");
 
         let mut raft_node = self.0.lock().unwrap();
+        println!("receive on_append_entries get lock");
+
         match *raft_node {
             Some(RaftNode::Follower(ref mut node)) => node.on_append_entries(&req),
             Some(RaftNode::Candidate(ref mut node)) => node.on_append_entries(&req),
