@@ -11,15 +11,15 @@ extern crate rand;
 extern crate env_logger;
 extern crate timer;
 
-
-use docopt::Docopt;
-
 mod rpc;
 mod node;
 mod raft_node;
 mod raft_server;
 mod rpc_server;
 mod event;
+
+use docopt::Docopt;
+use rpc::ServerId;
 
 const USAGE: &'static str = "
 rust-raft.
@@ -46,6 +46,7 @@ fn main() {
     let addr = format!("localhost:{}", port);
     let mut servers = args.get_vec("--peers");
     servers.push(addr.as_str());
-    let server = raft_server::RaftServer::new(addr.to_string(), &servers);
+    let server_ids = servers.iter().map(|s| ServerId(s.to_string())).collect();
+    let server = raft_server::RaftServer::new(ServerId(addr.to_owned()), server_ids);
     server.run_forever();
 }

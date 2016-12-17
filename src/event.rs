@@ -1,4 +1,4 @@
-use ::rpc::{VoteReq, AppendEntriesReq};
+use ::rpc::{VoteReq, AppendEntriesReq, ServerId};
 
 
 #[derive(Debug)]
@@ -7,6 +7,6 @@ pub enum Event {
     ConvertToFollower,
     ConvertToLeader,
     ConvertToCandidate,
-    SendRequestVote((String, VoteReq)),
-    SendAppendEntries((String, AppendEntriesReq)),
+    SendRequestVote((ServerId, VoteReq)),
+    SendAppendEntries((ServerId, AppendEntriesReq)),
 }

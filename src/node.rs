@@ -5,6 +5,7 @@ use rand;
 use std::fmt;
 
 use ::rpc;
+use ::rpc::ServerId;
 use ::event::Event;
 use ::raft_node::LiveRaftNode;
 
@@ -13,17 +14,16 @@ use ::raft_node::LiveRaftNode;
 const ELECTION_TIMEOUT: u64 = 1000;
 const HEARTBEAT_INTERVAL: u64 = 100;
 
-
 #[derive(Debug)]
 pub struct Node<T> {
-    server_id: String,
+    server_id: ServerId,
     current_term: u64,
-    voted_for: Option<String>,
+    voted_for: Option<ServerId>,
     log: Vec<rpc::Entry>,
     commit_index: u64,
     last_applied_id: u64,
     noti_center: Sender<Event>,
-    servers: HashSet<String>,
+    servers: HashSet<ServerId>,
     state: T,
 }
 
@@ -85,12 +85,12 @@ impl<T> Node<T> where Node<T>: LiveRaftNode {
         self.log.truncate(index as usize);
     }
 
-    fn peers(&self) -> Vec<String> {
+    fn peers(&self) -> Vec<ServerId> {
         self.servers
             .iter()
             .filter(|server| {
-                server.as_str() != self.server_id.as_str()
-            }).cloned().collect::<Vec<String>>()
+                **server != self.server_id
+            }).cloned().collect::<Vec<ServerId>>()
     }
 }
 
@@ -101,7 +101,7 @@ pub struct Follower {
 }
 
 impl Node<Follower> {
-    pub fn new(server_id: String, servers: &[&str], noti_center: Sender<Event>) -> Self {
+    pub fn new(server_id: ServerId, servers: Vec<ServerId>, noti_center: Sender<Event>) -> Self {
         Node {
             server_id: server_id,
             current_term: 0,
@@ -113,7 +113,7 @@ impl Node<Follower> {
                 heartbeat_received_at: time::now_utc(),
             },
             noti_center: noti_center,
-            servers: servers.iter().map(|&s| s.to_string()).collect(),
+            servers: servers.into_iter().collect::<HashSet<ServerId>>(),
         }
     }
 }
@@ -257,7 +257,7 @@ impl LiveRaftNode for Node<Follower> {
 
 #[derive(Debug)]
 pub struct Candidate {
-    votes: HashSet<String>,
+    votes: HashSet<ServerId>,
     election_started_at: time::Tm,
     election_timeout: u64,
 }
@@ -273,7 +273,7 @@ impl Node<Candidate> {
         self.state.election_timeout = election_timeout;
 
         self.state.votes.clear();
-        self.state.votes.insert(self.server_id.to_string());
+        self.state.votes.insert(self.server_id.clone());
         info!("{} new election, timeout: {}", self.current_term, election_timeout);
         self.send_vote_request();
     }
@@ -290,7 +290,7 @@ impl Node<Candidate> {
         }
     }
 
-    pub fn on_receive_vote_request(&mut self, peer: &str, resp: rpc::VoteResp) {
+    pub fn on_receive_vote_request(&mut self, peer: &ServerId, resp: rpc::VoteResp) {
         if resp.term > self.current_term {
             self.current_term = resp.term;
             info!("before trigger ConvertToFollower");
@@ -299,7 +299,7 @@ impl Node<Candidate> {
         }
 
         if resp.vote_granted {
-            self.state.votes.insert(peer.to_string());
+            self.state.votes.insert(peer.clone());
         }
     }
 }
@@ -379,8 +379,8 @@ impl LiveRaftNode for Node<Candidate> {
 
 #[derive(Debug)]
 pub struct Leader {
-    next_index: HashMap<String, u64>,
-    match_index: HashMap<String, u64>,
+    next_index: HashMap<ServerId, u64>,
+    match_index: HashMap<ServerId, u64>,
     heartbeat_sent_at: time::Tm,
 }
 
@@ -392,7 +392,7 @@ impl Node<Leader> {
         }
     }
 
-    fn send_append_entries_request(&self, peer: &str) {
+    fn send_append_entries_request(&self, peer: &ServerId) {
         let last_log_index = self.last_log_index();
         let next_index = self.state.next_index.get(peer).map_or(last_log_index + 1, |i| *i);
         info!("a");
@@ -413,7 +413,7 @@ impl Node<Leader> {
         };
         info!("c");
 
-        self.trigger(Event::SendAppendEntries((peer.into(), req)));
+        self.trigger(Event::SendAppendEntries((peer.clone(), req)));
         info!("d");
     }
 
@@ -424,7 +424,7 @@ impl Node<Leader> {
         }
     }
 
-    pub fn on_receive_append_entries_request(&mut self, peer: &str, resp: rpc::AppendEntriesResp) {
+    pub fn on_receive_append_entries_request(&mut self, peer: &ServerId, resp: rpc::AppendEntriesResp) {
         self.state.heartbeat_sent_at = time::now_utc();
         let last_log_index = self.last_log_index();
 
@@ -441,7 +441,7 @@ impl Node<Leader> {
             info!("on_receive_append_entries_request: nex index");
 
             if next_index >= 1 {
-                self.state.next_index.insert(peer.to_string(), next_index - 1);
+                self.state.next_index.insert(peer.clone(), next_index - 1);
                 self.send_append_entries_request(peer);
                 return;
             }
