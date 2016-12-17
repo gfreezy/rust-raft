@@ -1,4 +1,6 @@
 #![feature(proc_macro)]
+#![feature(plugin)]
+#![plugin(clippy)]
 
 #[macro_use] extern crate tarpc;
 #[macro_use] extern crate serde_derive;
@@ -9,13 +11,15 @@ extern crate rand;
 extern crate env_logger;
 extern crate timer;
 
+
 use docopt::Docopt;
 
 mod rpc;
 mod node;
+mod raft_node;
 mod raft_server;
 mod rpc_server;
-
+mod event;
 
 const USAGE: &'static str = "
 rust-raft.

@@ -1,9 +1,12 @@
 use time;
 use std::collections::{HashMap, HashSet};
-use std::sync::mpsc::{Sender, Receiver};
+use std::sync::mpsc::Sender;
 use rand;
 use std::fmt;
+
 use ::rpc;
+use ::event::Event;
+use ::raft_node::LiveRaftNode;
 
 
 // 500ms timeout
@@ -24,197 +27,19 @@ pub struct Node<T> {
     state: T,
 }
 
-#[derive(Debug)]
-pub struct Leader {
-    next_index: HashMap<String, u64>,
-    match_index: HashMap<String, u64>,
-    heartbeat_sent_at: time::Tm,
-}
-
-#[derive(Debug)]
-pub struct Follower {
-    heartbeat_received_at: time::Tm,
-}
-
-#[derive(Debug)]
-pub struct Candidate {
-    votes: HashSet<String>,
-    election_started_at: time::Tm,
-    election_timeout: u64,
-}
-
-#[derive(Debug)]
-pub enum Event {
-    ClockTick,
-    ConvertToFollower,
-    ConvertToLeader,
-    ConvertToCandidate,
-    SendRequestVote((String, rpc::VoteReq)),
-    SendAppendEntries((String, rpc::AppendEntriesReq)),
-}
-
-#[derive(Debug)]
-pub enum RaftNode {
-    Leader(Node<Leader>),
-    Follower(Node<Follower>),
-    Candidate(Node<Candidate>),
-}
-
-
-impl RaftNode {
-    pub fn new(server_id: String, servers: &[&str], noti_center: Sender<Event>) -> Self {
-        RaftNode::Follower(Node::new(server_id, servers, noti_center))
-    }
-}
-
-
-impl fmt::Display for RaftNode {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let x = match *self {
-            RaftNode::Leader(ref x) => format!("{}", x),
-            RaftNode::Follower(ref x) => format!("{}", x),
-            RaftNode::Candidate(ref x) => format!("{}", x),
-        };
-        write!(f, "{}", x)
-    }
-}
-
-
-impl Node<Follower> {
-    pub fn new(server_id: String, servers: &[&str], noti_center: Sender<Event>) -> Self {
-        Node {
-            server_id: server_id,
-            current_term: 0,
-            voted_for: None,
-            log: Vec::new(),
-            commit_index: 0,
-            last_applied_id: 0,
-            state: Follower {
-                heartbeat_received_at: time::now_utc(),
-            },
-            noti_center: noti_center,
-            servers: servers.iter().map(|&s| s.to_string()).collect(),
-        }
-    }
-}
-
-
-impl fmt::Display for Node<Follower> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "Node<Follower, {}>", &self.server_id)
-    }
-}
-
-
-impl From<Node<Follower>> for Node<Candidate> {
-    fn from(val: Node<Follower>) -> Self {
-        let mut n: Node<Candidate> = Node {
-            server_id: val.server_id.clone(),
-            current_term: val.current_term,
-            voted_for: Some(val.server_id),
-            log: val.log,
-            commit_index: val.commit_index,
-            last_applied_id: val.last_applied_id,
-            noti_center: val.noti_center,
-            servers: val.servers,
-            state: Candidate {
-                votes: HashSet::new(),
-                election_started_at: time::now_utc(),
-                election_timeout: ELECTION_TIMEOUT,
-            },
-        };
-        n.new_election();
-        info!("from Follower to Candidate");
-        n
-    }
-}
-
-
-impl From<Node<Candidate>> for Node<Follower> {
-    fn from(val: Node<Candidate>) -> Self {
-        let n = Node {
-            server_id: val.server_id,
-            current_term: val.current_term,
-            voted_for: None,
-            log: val.log,
-            commit_index: val.commit_index,
-            last_applied_id: val.last_applied_id,
-            noti_center: val.noti_center,
-            servers: val.servers,
-            state: Follower {
-                heartbeat_received_at: time::now_utc(),
-            },
-        };
-        info!("from Candidate to Follower");
-        n
-    }
-}
-
-
-impl From<Node<Candidate>> for Node<Leader> {
-    fn from(val: Node<Candidate>) -> Self {
-        let node = Node {
-            server_id: val.server_id,
-            current_term: val.current_term,
-            voted_for: val.voted_for,
-            log: val.log,
-            commit_index: val.commit_index,
-            last_applied_id: val.last_applied_id,
-            noti_center: val.noti_center,
-            state: Leader {
-                next_index: HashMap::new(),
-                match_index: HashMap::new(),
-                heartbeat_sent_at: time::now_utc(),
-            },
-            servers: val.servers,
-        };
-        node.send_heartbeat();
-        info!("from Candidate to Leader");
-        node
-    }
-}
-
-
-impl From<Node<Leader>> for Node<Follower> {
-    fn from(val: Node<Leader>) -> Self {
-        let n = Node {
-            server_id: val.server_id,
-            current_term: val.current_term,
-            voted_for: val.voted_for,
-            log: val.log,
-            commit_index: val.commit_index,
-            last_applied_id: val.last_applied_id,
-            noti_center: val.noti_center,
-            servers: val.servers,
-            state: Follower {
-                heartbeat_received_at: time::now_utc(),
-            },
-        };
-        info!("from Leader to Follower");
-        n
-    }
-}
-
-
-pub trait LiveRaftNode {
-    fn on_append_entries(&mut self, req: &rpc::AppendEntriesReq) -> rpc::AppendEntriesResp;
-    fn on_request_vote(&mut self, req: &rpc::VoteReq) -> rpc::VoteResp;
-    fn on_clock_tick(&mut self);
-}
-
-
 impl<T> Node<T> where Node<T>: LiveRaftNode {
     fn trigger(&self, event: Event) {
-        self.noti_center.send(event);
+        self.noti_center.send(event).expect("send event");
     }
 
+    #[allow(unused_variables)]
     fn apply(&self, entry: &rpc::Entry) {}
 
     fn apply_log(&mut self) {
         while self.commit_index > self.last_applied_id {
             self.last_applied_id += 1;
             let entry = self.log.get(self.last_applied_id as usize);
-            self.apply(&entry.unwrap());
+            self.apply(entry.unwrap());
         }
     }
 
@@ -270,6 +95,78 @@ impl<T> Node<T> where Node<T>: LiveRaftNode {
 }
 
 
+#[derive(Debug)]
+pub struct Follower {
+    heartbeat_received_at: time::Tm,
+}
+
+impl Node<Follower> {
+    pub fn new(server_id: String, servers: &[&str], noti_center: Sender<Event>) -> Self {
+        Node {
+            server_id: server_id,
+            current_term: 0,
+            voted_for: None,
+            log: Vec::new(),
+            commit_index: 0,
+            last_applied_id: 0,
+            state: Follower {
+                heartbeat_received_at: time::now_utc(),
+            },
+            noti_center: noti_center,
+            servers: servers.iter().map(|&s| s.to_string()).collect(),
+        }
+    }
+}
+
+
+impl fmt::Display for Node<Follower> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "Node<Follower, {}>", &self.server_id)
+    }
+}
+
+
+impl From<Node<Candidate>> for Node<Follower> {
+    fn from(val: Node<Candidate>) -> Self {
+        let n = Node {
+            server_id: val.server_id,
+            current_term: val.current_term,
+            voted_for: None,
+            log: val.log,
+            commit_index: val.commit_index,
+            last_applied_id: val.last_applied_id,
+            noti_center: val.noti_center,
+            servers: val.servers,
+            state: Follower {
+                heartbeat_received_at: time::now_utc(),
+            },
+        };
+        info!("from Candidate to Follower");
+        n
+    }
+}
+
+
+impl From<Node<Leader>> for Node<Follower> {
+    fn from(val: Node<Leader>) -> Self {
+        let n = Node {
+            server_id: val.server_id,
+            current_term: val.current_term,
+            voted_for: val.voted_for,
+            log: val.log,
+            commit_index: val.commit_index,
+            last_applied_id: val.last_applied_id,
+            noti_center: val.noti_center,
+            servers: val.servers,
+            state: Follower {
+                heartbeat_received_at: time::now_utc(),
+            },
+        };
+        info!("from Leader to Follower");
+        n
+    }
+}
+
 impl LiveRaftNode for Node<Follower> {
     fn on_request_vote(&mut self, req: &rpc::VoteReq) -> rpc::VoteResp {
         if req.term > self.current_term {
@@ -278,14 +175,13 @@ impl LiveRaftNode for Node<Follower> {
         }
 
         let mut vote_granted = false;
-        if req.term == self.current_term {
-            if self.voted_for.is_none() || self.voted_for == Some(req.candidate_id.clone()) {
-                if req.last_log_index >= self.last_log_index() && req.last_log_term >= self.last_log_term() {
-                    vote_granted = true;
-                    self.voted_for = Some(req.candidate_id.clone());
-                }
-            }
+        if (req.term == self.current_term)
+            && (self.voted_for.is_none() || self.voted_for == Some(req.candidate_id.clone()))
+            && (req.last_log_index >= self.last_log_index() && req.last_log_term >= self.last_log_term()) {
+            vote_granted = true;
+            self.voted_for = Some(req.candidate_id.clone());
         }
+
 
         info!("{} term: {}, vote granted: {}", self, self.current_term, vote_granted);
         rpc::VoteResp {
@@ -359,6 +255,14 @@ impl LiveRaftNode for Node<Follower> {
 }
 
 
+#[derive(Debug)]
+pub struct Candidate {
+    votes: HashSet<String>,
+    election_started_at: time::Tm,
+    election_timeout: u64,
+}
+
+
 impl Node<Candidate> {
     fn new_election(&mut self) {
         self.current_term += 1;
@@ -375,16 +279,15 @@ impl Node<Candidate> {
     }
 
     fn send_vote_request(&self) {
-        self.peers().iter()
-            .map(|server| {
-                let req = rpc::VoteReq {
-                    term: self.current_term,
-                    candidate_id: self.server_id.clone(),
-                    last_log_index: self.last_log_index(),
-                    last_log_term: self.last_log_term(),
-                };
-                self.trigger(Event::SendRequestVote((server.clone(), req)));
-            }).collect::<Vec<()>>();
+        for server in &self.peers() {
+            let req = rpc::VoteReq {
+                term: self.current_term,
+                candidate_id: self.server_id.clone(),
+                last_log_index: self.last_log_index(),
+                last_log_term: self.last_log_term(),
+            };
+            self.trigger(Event::SendRequestVote((server.clone(), req)));
+        }
     }
 
     pub fn on_receive_vote_request(&mut self, peer: &str, resp: rpc::VoteResp) {
@@ -406,6 +309,31 @@ impl fmt::Display for Node<Candidate> {
         write!(f, "Node<Candidate, {}>", &self.server_id)
     }
 }
+
+
+impl From<Node<Follower>> for Node<Candidate> {
+    fn from(val: Node<Follower>) -> Self {
+        let mut n: Node<Candidate> = Node {
+            server_id: val.server_id.clone(),
+            current_term: val.current_term,
+            voted_for: Some(val.server_id),
+            log: val.log,
+            commit_index: val.commit_index,
+            last_applied_id: val.last_applied_id,
+            noti_center: val.noti_center,
+            servers: val.servers,
+            state: Candidate {
+                votes: HashSet::new(),
+                election_started_at: time::now_utc(),
+                election_timeout: ELECTION_TIMEOUT,
+            },
+        };
+        n.new_election();
+        info!("from Follower to Candidate");
+        n
+    }
+}
+
 
 impl LiveRaftNode for Node<Candidate> {
     fn on_request_vote(&mut self, req: &rpc::VoteReq) -> rpc::VoteResp {
@@ -449,46 +377,11 @@ impl LiveRaftNode for Node<Candidate> {
 }
 
 
-impl LiveRaftNode for Node<Leader> {
-    fn on_append_entries(&mut self, req: &rpc::AppendEntriesReq) -> rpc::AppendEntriesResp {
-        if req.term > self.current_term {
-            self.current_term = req.term;
-            self.trigger(Event::ConvertToFollower);
-        }
-
-        rpc::AppendEntriesResp {
-            term: self.current_term,
-            success: false,
-        }
-    }
-
-    fn on_request_vote(&mut self, req: &rpc::VoteReq) -> rpc::VoteResp {
-        if req.term > self.current_term {
-            self.current_term = req.term;
-            info!("before trigger");
-            self.trigger(Event::ConvertToFollower);
-            info!("after trigger");
-        }
-
-        rpc::VoteResp {
-            term: self.current_term,
-            vote_granted: false,
-        }
-    }
-
-    fn on_clock_tick(&mut self) {
-        let period_since_last_heartbeat = time::now_utc() - self.state.heartbeat_sent_at;
-        if period_since_last_heartbeat.num_milliseconds() > HEARTBEAT_INTERVAL as i64 {
-            self.send_heartbeat()
-        }
-    }
-}
-
-
-impl fmt::Display for Node<Leader> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "Node<Leader, {}>", &self.server_id)
-    }
+#[derive(Debug)]
+pub struct Leader {
+    next_index: HashMap<String, u64>,
+    match_index: HashMap<String, u64>,
+    heartbeat_sent_at: time::Tm,
 }
 
 
@@ -524,9 +417,11 @@ impl Node<Leader> {
         info!("d");
     }
 
+    #[allow(dead_code)]
     fn send_append_entries_requests(&self) {
-        self.peers().iter()
-            .map(|server| self.send_append_entries_request(server)).collect::<Vec<()>>();
+        for server in &self.peers() {
+            self.send_append_entries_request(server);
+        }
     }
 
     pub fn on_receive_append_entries_request(&mut self, peer: &str, resp: rpc::AppendEntriesResp) {
@@ -577,6 +472,7 @@ impl Node<Leader> {
         }
     }
 
+    #[allow(dead_code)]
     pub fn on_receive_command(&mut self, command: String) -> String {
         let entry = rpc::Entry {
             term: self.current_term,
@@ -587,6 +483,71 @@ impl Node<Leader> {
         self.send_append_entries_requests();
 
         self.apply_log();
-        return "ok".into();
+        "ok".into()
+    }
+}
+
+impl fmt::Display for Node<Leader> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "Node<Leader, {}>", &self.server_id)
+    }
+}
+
+impl LiveRaftNode for Node<Leader> {
+    fn on_append_entries(&mut self, req: &rpc::AppendEntriesReq) -> rpc::AppendEntriesResp {
+        if req.term > self.current_term {
+            self.current_term = req.term;
+            self.trigger(Event::ConvertToFollower);
+        }
+
+        rpc::AppendEntriesResp {
+            term: self.current_term,
+            success: false,
+        }
+    }
+
+    fn on_request_vote(&mut self, req: &rpc::VoteReq) -> rpc::VoteResp {
+        if req.term > self.current_term {
+            self.current_term = req.term;
+            info!("before trigger");
+            self.trigger(Event::ConvertToFollower);
+            info!("after trigger");
+        }
+
+        rpc::VoteResp {
+            term: self.current_term,
+            vote_granted: false,
+        }
+    }
+
+    fn on_clock_tick(&mut self) {
+        let period_since_last_heartbeat = time::now_utc() - self.state.heartbeat_sent_at;
+        if period_since_last_heartbeat.num_milliseconds() > HEARTBEAT_INTERVAL as i64 {
+            self.send_heartbeat()
+        }
+    }
+}
+
+
+impl From<Node<Candidate>> for Node<Leader> {
+    fn from(val: Node<Candidate>) -> Self {
+        let node = Node {
+            server_id: val.server_id,
+            current_term: val.current_term,
+            voted_for: val.voted_for,
+            log: val.log,
+            commit_index: val.commit_index,
+            last_applied_id: val.last_applied_id,
+            noti_center: val.noti_center,
+            state: Leader {
+                next_index: HashMap::new(),
+                match_index: HashMap::new(),
+                heartbeat_sent_at: time::now_utc(),
+            },
+            servers: val.servers,
+        };
+        node.send_heartbeat();
+        info!("from Candidate to Leader");
+        node
     }
 }

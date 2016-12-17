@@ -1,6 +1,6 @@
 use std::sync::{Mutex, Arc};
 use ::rpc;
-use ::node::{RaftNode, LiveRaftNode};
+use ::raft_node::{RaftNode, LiveRaftNode};
 
 
 pub struct RpcServer(Arc<Mutex<Option<RaftNode>>>);
