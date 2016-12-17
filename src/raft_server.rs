@@ -12,12 +12,16 @@ use ::rpc;
 use ::rpc_server;
 use ::rpc::Service;
 
+
 pub struct RaftServer {
     pub raft_node: Arc<Mutex<Option<RaftNode>>>,
     noti_center: Receiver<Event>,
     peers: HashMap<String, tarpc::Result<rpc::Client>>,
+    #[allow(dead_code)]
     server_handle: tarpc::ServeHandle,
+    #[allow(dead_code)]
     timer: timer::Timer,
+    #[allow(dead_code)]
     guard: timer::Guard,
 }
 
