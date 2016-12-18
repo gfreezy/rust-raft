@@ -1,4 +1,4 @@
-use ::rpc::{Entry, EntryIndex};
+use ::rpc::{Entry, EntryIndex, Term};
 
 
 #[derive(Debug)]
@@ -37,5 +37,27 @@ impl EntryLog {
 
     pub fn last_index(&self) -> EntryIndex {
         EntryIndex(self.entries.len() as u64).prev_or_zero()
+    }
+
+    pub fn prev_last_index(&self) -> EntryIndex {
+        self.last_index().prev_or_zero()
+    }
+
+    pub fn last_entry_term(&self) -> Term {
+        let entry = self.last_entry();
+        entry.map_or_else(|| Term(0), |e| e.term)
+    }
+
+    pub fn prev_last_entry_term(&self) -> Term {
+        let entry = self.prev_last_entry();
+        entry.map_or_else(|| Term(0), |e| e.term)
+    }
+
+    fn last_entry(&self) -> Option<&Entry> {
+        self.get(self.last_index())
+    }
+
+    fn prev_last_entry(&self) -> Option<&Entry> {
+        self.get(self.prev_last_index())
     }
 }

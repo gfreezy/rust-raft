@@ -28,7 +28,7 @@ pub struct Node<T> {
     state: T,
 }
 
-impl<T> Node<T> where Node<T>: LiveRaftNode {
+impl<T> Node<T> {
     fn trigger(&self, event: Event) {
         self.noti_center.send(event).expect("send event");
     }
@@ -42,39 +42,6 @@ impl<T> Node<T> where Node<T>: LiveRaftNode {
             let entry = self.log.get(self.last_applied_id);
             self.apply(entry.unwrap());
         }
-    }
-
-    fn last_log_index(&self) -> EntryIndex {
-        self.log.last_index()
-    }
-
-    fn last_log_term(&self) -> Term {
-        let last_log_index = self.last_log_index();
-        let entry = self.log.get(last_log_index.prev_or_zero());
-        entry.map_or_else(|| Term(0), |e| e.term)
-    }
-
-    fn prev_last_log_index(&self) -> EntryIndex {
-        let last_log_index = self.last_log_index();
-        last_log_index.prev_or_zero()
-    }
-
-    fn prev_last_log_term(&self) -> Term {
-        let last_log_index = self.prev_last_log_index();
-        let entry = self.log.get(last_log_index.prev_or_zero());
-        entry.map_or_else(|| Term(0), |e| e.term)
-    }
-
-    fn get_entry_at(&self, index: EntryIndex) -> Option<&Entry> {
-        self.log.get(index)
-    }
-
-    fn append_entry(&mut self, entry: Entry) {
-        self.log.push(entry);
-    }
-
-    fn delete_entries_since(&mut self, index: EntryIndex) {
-        self.log.truncate(index);
     }
 
     fn peers(&self) -> Vec<ServerId> {
@@ -169,7 +136,7 @@ impl LiveRaftNode for Node<Follower> {
         let mut vote_granted = false;
         if (req.term == self.current_term)
             && (self.voted_for.is_none() || self.voted_for == Some(req.candidate_id.clone()))
-            && (req.last_log_index >= self.last_log_index() && req.last_log_term >= self.last_log_term()) {
+            && (req.last_log_index >= self.log.last_index() && req.last_log_term >= self.log.last_entry_term()) {
             vote_granted = true;
             self.voted_for = Some(req.candidate_id.clone());
         }
@@ -196,7 +163,7 @@ impl LiveRaftNode for Node<Follower> {
         }
 
         if req.prev_log_index > EntryIndex(0) {
-            let prev_entry = self.get_entry_at(req.prev_log_index);
+            let prev_entry = self.log.get(req.prev_log_index);
             if prev_entry.is_none() || prev_entry.unwrap().term != req.prev_log_term {
                 return AppendEntriesResp {
                     term: self.current_term,
@@ -207,24 +174,24 @@ impl LiveRaftNode for Node<Follower> {
 
         for (i, entry) in req.entries.iter().enumerate() {
             let index = req.prev_log_index + i + 1;
-            let term = self.get_entry_at(index).and_then(|e| Some(e.term));
+            let term = self.log.get(index).and_then(|e| Some(e.term));
             match term {
                 None => {
-                    self.append_entry((*entry).clone());
+                    self.log.push((*entry).clone());
                 },
                 Some(t) => {
                     if t != self.current_term {
-                        self.delete_entries_since(index);
+                        self.log.truncate(index);
                     }
                 },
             }
         }
 
         if req.leader_commit > self.commit_index {
-            self.commit_index = if req.leader_commit < self.last_log_index() {
+            self.commit_index = if req.leader_commit < self.log.last_index() {
                 req.leader_commit
             } else {
-                self.last_log_index()
+                self.log.last_index()
             }
         }
 
@@ -275,8 +242,8 @@ impl Node<Candidate> {
             let req = VoteReq {
                 term: self.current_term,
                 candidate_id: self.server_id.clone(),
-                last_log_index: self.last_log_index(),
-                last_log_term: self.last_log_term(),
+                last_log_index: self.log.last_index(),
+                last_log_term: self.log.last_entry_term()
             };
             self.trigger(Event::SendRequestVote((server.clone(), req)));
         }
@@ -385,7 +352,7 @@ impl Node<Leader> {
     }
 
     fn send_append_entries_request(&self, peer: &ServerId) {
-        let last_log_index = self.last_log_index();
+        let last_log_index = self.log.last_index();
         let next_index = self.state.next_index.get(peer).map_or(last_log_index + 1, |i| *i);
         let entries = if last_log_index >= next_index {
             self.log.get_entries_since_index(next_index)
@@ -398,8 +365,8 @@ impl Node<Leader> {
             entries: entries,
             leader_commit: self.commit_index,
             leader_id: self.server_id.clone(),
-            prev_log_index: self.prev_last_log_index(),
-            prev_log_term: self.prev_last_log_term(),
+            prev_log_index: self.log.prev_last_index(),
+            prev_log_term: self.log.prev_last_entry_term(),
         };
 
         self.trigger(Event::SendAppendEntries((peer.clone(), req)));
@@ -414,7 +381,7 @@ impl Node<Leader> {
 
     pub fn on_receive_append_entries_request(&mut self, peer: &ServerId, resp: AppendEntriesResp) {
         self.state.heartbeat_sent_at = time::now_utc();
-        let last_log_index = self.last_log_index();
+        let last_log_index = self.log.last_index();
 
         if resp.term > self.current_term {
             self.current_term = resp.term;
@@ -447,7 +414,7 @@ impl Node<Leader> {
                 break;
             }
 
-            let term = self.get_entry_at(index).and_then(|e| Some(e.term));
+            let term = self.log.get(index).and_then(|e| Some(e.term));
             info!("term: {:?}, current_term: {:?}", term, self.current_term);
             if term == Some(self.current_term) {
                 self.commit_index = index;
@@ -465,7 +432,7 @@ impl Node<Leader> {
             term: self.current_term,
             payload: command,
         };
-        self.append_entry(entry);
+        self.log.push(entry);
 
         self.send_append_entries_requests();
 
