@@ -1,38 +1,42 @@
 use std::collections::HashMap;
 use std::sync::{Mutex, Arc};
-use std::sync::mpsc::{Sender, Receiver, channel};
+use std::sync::mpsc::{Receiver, channel};
 use std::time::Duration;
 use tarpc;
 use timer;
 use time;
 
-use ::node::{Event, RaftNode};
+use ::raft_node::{RaftNode, LiveRaftNode};
+use ::event::Event;
 use ::rpc;
 use ::rpc_server;
-use ::rpc::Service;
-use node::LiveRaftNode;
+use ::rpc::{Service, ServerId};
+
 
 pub struct RaftServer {
     pub raft_node: Arc<Mutex<Option<RaftNode>>>,
     noti_center: Receiver<Event>,
-    peers: HashMap<String, tarpc::Result<rpc::Client>>,
+    peers: HashMap<ServerId, tarpc::Result<rpc::Client>>,
+    #[allow(dead_code)]
     server_handle: tarpc::ServeHandle,
+    #[allow(dead_code)]
     timer: timer::Timer,
+    #[allow(dead_code)]
     guard: timer::Guard,
 }
 
 
 impl RaftServer {
-    pub fn new(addr: String, servers: &[&str]) -> RaftServer {
+    pub fn new(addr: ServerId, servers: Vec<ServerId>) -> RaftServer {
         let (sender, receiver) = channel();
-        let peers = servers.iter().map(|s| (s.to_string(), rpc::Client::new(*s))).collect();
+        let peers = servers.iter().map(|s| (s.to_owned(), rpc::Client::new(&s.0))).collect();
         let raft_node = Arc::new(Mutex::new(Some(RaftNode::new(addr.clone(), servers, sender.clone()))));
         let s = rpc_server::RpcServer::new(raft_node.clone());
-        let server_handle = s.spawn_with_config(addr.as_str(), tarpc::Config { timeout: Some(Duration::new(5, 0)) }).expect("listen");
+        let server_handle = s.spawn_with_config(addr.0.as_str(), tarpc::Config { timeout: Some(Duration::new(5, 0)) }).expect("listen");
 
         let timer = timer::Timer::new();
         let guard = timer.schedule_repeating(time::Duration::milliseconds(100), move || {
-            sender.send(Event::ClockTick);
+            sender.send(Event::ClockTick).expect("send event");
         });
 
         RaftServer {
@@ -75,9 +79,6 @@ impl RaftServer {
                 Ok(Event::ConvertToFollower) => {
                     let mut raft_node = self.raft_node.lock().expect("lock raft node");
                     let _raft_node = raft_node.take().unwrap();
-
-                    info!("-------------ConvertToFollower-------------");
-
                     *raft_node = Some(match _raft_node {
                         RaftNode::Follower(_) => unreachable!(),
                         RaftNode::Candidate(node) => RaftNode::Follower(node.into()),
@@ -87,8 +88,6 @@ impl RaftServer {
                 Ok(Event::ConvertToLeader) => {
                     let mut raft_node = self.raft_node.lock().expect("lock raft node");
                     let _raft_node = raft_node.take().unwrap();
-                    info!("+++++++++++++ConvertToLeader+++++++++++++");
-
                     *raft_node = Some(match _raft_node {
                         RaftNode::Follower(_) => unreachable!(),
                         RaftNode::Candidate(node) => RaftNode::Leader(node.into()),
@@ -98,8 +97,6 @@ impl RaftServer {
                 Ok(Event::ConvertToCandidate) => {
                     let mut raft_node = self.raft_node.lock().expect("lock raft node");
                     let _raft_node = raft_node.take().unwrap();
-                    info!("#############ConvertToCandidate#############");
-
                     *raft_node = Some(match _raft_node {
                         RaftNode::Follower(node) => RaftNode::Candidate(node.into()),
                         RaftNode::Candidate(_) => unreachable!(),
@@ -110,57 +107,39 @@ impl RaftServer {
                     {
                         let raft_node = self.raft_node.lock().expect("lock raft node");
                         match *raft_node {
-                            Some(RaftNode::Follower(_)) => {
-                                continue;
-                            },
-                            Some(RaftNode::Candidate(_)) => {
+                            Some(RaftNode::Follower(_)) | Some(RaftNode::Candidate(_)) => {
                                 continue;
                             },
                             _ => {}
                         };
                     }
 
-                    info!("Entry: --------> {}", &peer);
-                    let ret = pool.get_client(&peer).and_then(|c| {
-                        info!("\tSending request");
-                        let resp = c.on_append_entries(req);
-                        info!("\tRecevied Response");
-                        Some(match resp {
-                            Ok(r) => {
-                                info!("\tLocking raft node");
-                                let mut raft_node = self.raft_node.lock().expect("lock raft node");
-                                info!("\tAquired raft node lock");
-
-                                if let Some(RaftNode::Leader(ref mut node)) = *raft_node {
-                                    info!("\tProcess response");
-                                    node.on_receive_append_entries_request(&peer, r);
-                                }
-                                info!("\tFinished process response");
-
-                                Ok(())
-                            },
-                            Err(e) => {
-                                info!("Error: {:?}", &e);
-                                Err(e)
-                            },
+                    pool.get_client(&peer)
+                        .and_then(|c| {
+                            info!("Append Entry: {:?} ------------> {}", &req, peer);
+                            c.on_append_entries(req)
+                                .map_err(|e| error!("Append Entry: {:?}", e)).ok()
                         })
-                    });
-                    match ret {
-                        Some(Ok(_)) => {},
-                        _ => {
-                            info!("\tRemoved client");
+                        .and_then(|resp| {
+                            let mut raft_node = self.raft_node.lock().expect("lock raft node");
+
+                            if let Some(RaftNode::Leader(ref mut node)) = *raft_node {
+                                node.on_receive_append_entries_request(&peer, resp);
+                                Some(())
+                            } else {
+                                None
+                            }
+                        })
+                        .or_else(|| {
                             pool.remove_client(&peer);
-                        },
-                    };
+                            None
+                        });
                 },
                 Ok(Event::SendRequestVote((peer, req))) => {
                     {
                         let raft_node = self.raft_node.lock().expect("lock raft node");
                         match *raft_node {
-                            Some(RaftNode::Follower(_)) => {
-                                continue;
-                            },
-                            Some(RaftNode::Leader(_)) => {
+                            Some(RaftNode::Follower(_)) | Some(RaftNode::Leader(_)) => {
                                 continue;
                             },
                             _ => {}
@@ -206,32 +185,32 @@ impl RaftServer {
 
 
 struct ConnectionPool {
-    conns: HashMap<String, tarpc::Result<rpc::Client>>,
+    conns: HashMap<ServerId, tarpc::Result<rpc::Client>>,
 }
 
 impl ConnectionPool {
-    pub fn new(addrs: Vec<String>) -> Self {
+    pub fn new(server_ids: Vec<ServerId>) -> Self {
         let mut map = HashMap::new();
-        for addr in &addrs {
-            let c = rpc::Client::new(addr);
-            map.insert(addr.to_string(), c);
+        for server_id in server_ids {
+            let c = rpc::Client::new(server_id.addr());
+            map.insert(server_id, c);
         }
         ConnectionPool {
             conns: map,
         }
     }
 
-    pub fn get_client(&mut self, addr: &str) -> Option<&rpc::Client> {
-        let v = self.conns.entry(addr.to_string()).or_insert(rpc::Client::new(addr));
+    pub fn get_client(&mut self, server_id: &ServerId) -> Option<&rpc::Client> {
+        let v = self.conns.entry(server_id.clone()).or_insert_with(|| rpc::Client::new(server_id.addr()));
         if v.is_ok() {
             return v.as_ref().ok();
         }
-        let c = rpc::Client::with_config(addr, tarpc::Config { timeout: Some(Duration::new(5, 0)) });
+        let c = rpc::Client::with_config(server_id.addr(), tarpc::Config { timeout: Some(Duration::new(5, 0)) });
         *v = c;
         v.as_ref().ok()
     }
 
-    pub fn remove_client(&mut self, addr: &str) {
-        self.conns.remove(addr);
+    pub fn remove_client(&mut self, server_id: &ServerId) {
+        self.conns.remove(server_id);
     }
 }
