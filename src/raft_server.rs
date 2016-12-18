@@ -79,9 +79,6 @@ impl RaftServer {
                 Ok(Event::ConvertToFollower) => {
                     let mut raft_node = self.raft_node.lock().expect("lock raft node");
                     let _raft_node = raft_node.take().unwrap();
-
-                    info!("-------------ConvertToFollower-------------");
-
                     *raft_node = Some(match _raft_node {
                         RaftNode::Follower(_) => unreachable!(),
                         RaftNode::Candidate(node) => RaftNode::Follower(node.into()),
@@ -91,8 +88,6 @@ impl RaftServer {
                 Ok(Event::ConvertToLeader) => {
                     let mut raft_node = self.raft_node.lock().expect("lock raft node");
                     let _raft_node = raft_node.take().unwrap();
-                    info!("+++++++++++++ConvertToLeader+++++++++++++");
-
                     *raft_node = Some(match _raft_node {
                         RaftNode::Follower(_) => unreachable!(),
                         RaftNode::Candidate(node) => RaftNode::Leader(node.into()),
@@ -102,8 +97,6 @@ impl RaftServer {
                 Ok(Event::ConvertToCandidate) => {
                     let mut raft_node = self.raft_node.lock().expect("lock raft node");
                     let _raft_node = raft_node.take().unwrap();
-                    info!("#############ConvertToCandidate#############");
-
                     *raft_node = Some(match _raft_node {
                         RaftNode::Follower(node) => RaftNode::Candidate(node.into()),
                         RaftNode::Candidate(_) => unreachable!(),
@@ -121,38 +114,26 @@ impl RaftServer {
                         };
                     }
 
-                    info!("Entry: --------> {}", &peer);
-                    let ret = pool.get_client(&peer).and_then(|c| {
-                        info!("\tSending request");
-                        let resp = c.on_append_entries(req);
-                        info!("\tRecevied Response");
-                        Some(match resp {
-                            Ok(r) => {
-                                info!("\tLocking raft node");
-                                let mut raft_node = self.raft_node.lock().expect("lock raft node");
-                                info!("\tAquired raft node lock");
-
-                                if let Some(RaftNode::Leader(ref mut node)) = *raft_node {
-                                    info!("\tProcess response");
-                                    node.on_receive_append_entries_request(&peer, r);
-                                }
-                                info!("\tFinished process response");
-
-                                Ok(())
-                            },
-                            Err(e) => {
-                                info!("Error: {:?}", &e);
-                                Err(e)
-                            },
+                    pool.get_client(&peer)
+                        .and_then(|c| {
+                            info!("Append Entry: {:?} ------------> {}", &req, peer);
+                            c.on_append_entries(req)
+                                .map_err(|e| error!("Append Entry: {:?}", e)).ok()
                         })
-                    });
-                    match ret {
-                        Some(Ok(_)) => {},
-                        _ => {
-                            info!("\tRemoved client");
+                        .and_then(|resp| {
+                            let mut raft_node = self.raft_node.lock().expect("lock raft node");
+
+                            if let Some(RaftNode::Leader(ref mut node)) = *raft_node {
+                                node.on_receive_append_entries_request(&peer, resp);
+                                Some(())
+                            } else {
+                                None
+                            }
+                        })
+                        .or_else(|| {
                             pool.remove_client(&peer);
-                        },
-                    };
+                            None
+                        });
                 },
                 Ok(Event::SendRequestVote((peer, req))) => {
                     {
@@ -220,7 +201,7 @@ impl ConnectionPool {
     }
 
     pub fn get_client(&mut self, server_id: &ServerId) -> Option<&rpc::Client> {
-        let v = self.conns.entry(server_id.clone()).or_insert_with(||rpc::Client::new(server_id.addr()));
+        let v = self.conns.entry(server_id.clone()).or_insert_with(|| rpc::Client::new(server_id.addr()));
         if v.is_ok() {
             return v.as_ref().ok();
         }
