@@ -13,7 +13,7 @@ impl RpcServer {
 
 impl rpc::Service for RpcServer {
     fn on_request_vote(&self, req: rpc::VoteReq) -> rpc::VoteResp {
-        info!("Received Vote <-----------------");
+        info!("Received Vote <----------------- {:?}", &req);
         let mut raft_node = self.0.lock().unwrap();
         info!("\tAquired lock");
 
@@ -23,12 +23,12 @@ impl rpc::Service for RpcServer {
             Some(RaftNode::Leader(ref mut node)) => node.on_request_vote(&req),
             None => unreachable!(),
         };
-        info!("\tFinish request");
+        info!("\tFinish request ---------------> {:?}", &resp);
         resp
     }
 
     fn on_append_entries(&self, req: rpc::AppendEntriesReq) -> rpc::AppendEntriesResp {
-        info!("Received Entry <-----------------");
+        info!("Received Entry <----------------- {:?}", &req);
 
         let mut raft_node = self.0.lock().unwrap();
         info!("\tAquired lock");
@@ -39,7 +39,8 @@ impl rpc::Service for RpcServer {
             Some(RaftNode::Leader(ref mut node)) => node.on_append_entries(&req),
             None => unreachable!(),
         };
-        info!("\tFinish request");
+        info!("\tFinish request ---------------> {:?}", &resp);
+
         resp
     }
 }

@@ -17,6 +17,7 @@ mod raft_node;
 mod raft_server;
 mod rpc_server;
 mod event;
+mod entry_log;
 
 use docopt::Docopt;
 use rpc::ServerId;
