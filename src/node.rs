@@ -8,6 +8,7 @@ use ::rpc::{ServerId, Term, EntryIndex, Entry, VoteReq, VoteResp, AppendEntriesR
 use ::event::Event;
 use ::raft_node::LiveRaftNode;
 use ::entry_log::EntryLog;
+use ::store::Store;
 
 
 // 500ms timeout
@@ -16,7 +17,7 @@ const HEARTBEAT_INTERVAL: u64 = 100;
 
 
 #[derive(Debug)]
-pub struct Node<T> {
+pub struct Node<T, S: Store> {
     server_id: ServerId,
     current_term: Term,
     voted_for: Option<ServerId>,
@@ -26,21 +27,21 @@ pub struct Node<T> {
     noti_center: Sender<Event>,
     servers: HashSet<ServerId>,
     state: T,
+    store: S,
 }
 
-impl<T> Node<T> {
+impl<T, S:Store> Node<T, S> {
     fn trigger(&self, event: Event) {
         self.noti_center.send(event).expect("send event");
     }
-
-    #[allow(unused_variables)]
-    fn apply(&self, entry: &Entry) {}
 
     fn apply_log(&mut self) {
         while self.commit_index > self.last_applied_id {
             self.last_applied_id.incr();
             let entry = self.log.get(self.last_applied_id);
-            self.apply(entry.unwrap());
+            if let Some(e) = entry {
+                self.store.apply(e)
+            }
         }
     }
 
@@ -59,8 +60,8 @@ pub struct Follower {
     heartbeat_received_at: time::Tm,
 }
 
-impl Node<Follower> {
-    pub fn new(server_id: ServerId, servers: Vec<ServerId>, noti_center: Sender<Event>) -> Self {
+impl<S: Store> Node<Follower, S> {
+    pub fn new(server_id: ServerId, store: S, servers: Vec<ServerId>, noti_center: Sender<Event>) -> Self {
         Node {
             server_id: server_id,
             current_term: Term(0),
@@ -73,20 +74,21 @@ impl Node<Follower> {
             },
             noti_center: noti_center,
             servers: servers.into_iter().collect::<HashSet<ServerId>>(),
+            store: store,
         }
     }
 }
 
 
-impl fmt::Display for Node<Follower> {
+impl<S: Store> fmt::Display for Node<Follower, S> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "Node<Follower, {}>", &self.server_id)
     }
 }
 
 
-impl From<Node<Candidate>> for Node<Follower> {
-    fn from(val: Node<Candidate>) -> Self {
+impl<S: Store> From<Node<Candidate, S>> for Node<Follower, S> {
+    fn from(val: Node<Candidate, S>) -> Self {
         let n = Node {
             server_id: val.server_id,
             current_term: val.current_term,
@@ -99,6 +101,7 @@ impl From<Node<Candidate>> for Node<Follower> {
             state: Follower {
                 heartbeat_received_at: time::now_utc(),
             },
+            store: val.store,
         };
         info!("from Candidate to Follower");
         n
@@ -106,8 +109,8 @@ impl From<Node<Candidate>> for Node<Follower> {
 }
 
 
-impl From<Node<Leader>> for Node<Follower> {
-    fn from(val: Node<Leader>) -> Self {
+impl<S: Store> From<Node<Leader, S>> for Node<Follower, S> {
+    fn from(val: Node<Leader, S>) -> Self {
         let n = Node {
             server_id: val.server_id,
             current_term: val.current_term,
@@ -120,13 +123,14 @@ impl From<Node<Leader>> for Node<Follower> {
             state: Follower {
                 heartbeat_received_at: time::now_utc(),
             },
+            store: val.store,
         };
         info!("from Leader to Follower");
         n
     }
 }
 
-impl LiveRaftNode for Node<Follower> {
+impl<S: Store> LiveRaftNode for Node<Follower, S> {
     fn on_request_vote(&mut self, req: &VoteReq) -> VoteResp {
         if req.term > self.current_term {
             self.current_term = req.term;
@@ -222,7 +226,7 @@ pub struct Candidate {
 }
 
 
-impl Node<Candidate> {
+impl<S: Store> Node<Candidate, S> {
     fn new_election(&mut self) {
         self.current_term.incr();
         self.state.election_started_at = time::now_utc();
@@ -263,16 +267,16 @@ impl Node<Candidate> {
     }
 }
 
-impl fmt::Display for Node<Candidate> {
+impl<S: Store> fmt::Display for Node<Candidate, S> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "Node<Candidate, {}>", &self.server_id)
     }
 }
 
 
-impl From<Node<Follower>> for Node<Candidate> {
-    fn from(val: Node<Follower>) -> Self {
-        let mut n: Node<Candidate> = Node {
+impl<S: Store> From<Node<Follower, S>> for Node<Candidate, S> {
+    fn from(val: Node<Follower, S>) -> Self {
+        let mut n: Node<Candidate, S> = Node {
             server_id: val.server_id.clone(),
             current_term: val.current_term,
             voted_for: Some(val.server_id),
@@ -286,6 +290,7 @@ impl From<Node<Follower>> for Node<Candidate> {
                 election_started_at: time::now_utc(),
                 election_timeout: ELECTION_TIMEOUT,
             },
+            store: val.store,
         };
         n.new_election();
         info!("from Follower to Candidate");
@@ -294,7 +299,7 @@ impl From<Node<Follower>> for Node<Candidate> {
 }
 
 
-impl LiveRaftNode for Node<Candidate> {
+impl<S: Store> LiveRaftNode for Node<Candidate, S> {
     fn on_request_vote(&mut self, req: &VoteReq) -> VoteResp {
         if req.term > self.current_term {
             self.current_term = req.term;
@@ -344,7 +349,7 @@ pub struct Leader {
 }
 
 
-impl Node<Leader> {
+impl<S: Store> Node<Leader, S> {
     fn send_heartbeat(&self) {
         for s in &self.peers() {
             self.send_append_entries_request(s);
@@ -441,13 +446,13 @@ impl Node<Leader> {
     }
 }
 
-impl fmt::Display for Node<Leader> {
+impl<S: Store> fmt::Display for Node<Leader, S> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "Node<Leader, {}>", &self.server_id)
     }
 }
 
-impl LiveRaftNode for Node<Leader> {
+impl<S: Store> LiveRaftNode for Node<Leader, S> {
     fn on_append_entries(&mut self, req: &AppendEntriesReq) -> AppendEntriesResp {
         if req.term > self.current_term {
             self.current_term = req.term;
@@ -483,8 +488,8 @@ impl LiveRaftNode for Node<Leader> {
 }
 
 
-impl From<Node<Candidate>> for Node<Leader> {
-    fn from(val: Node<Candidate>) -> Self {
+impl<S: Store> From<Node<Candidate, S>> for Node<Leader, S> {
+    fn from(val: Node<Candidate, S>) -> Self {
         let last_log_index = val.log.last_index();
         let next_index = {
             let mut map = HashMap::new();
@@ -516,6 +521,7 @@ impl From<Node<Candidate>> for Node<Leader> {
                 heartbeat_sent_at: time::now_utc(),
             },
             servers: val.servers,
+            store: val.store,
         };
 
         node.send_heartbeat();

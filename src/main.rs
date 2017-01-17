@@ -1,4 +1,3 @@
-#![feature(proc_macro)]
 #![feature(plugin)]
 #![plugin(clippy)]
 
@@ -18,6 +17,7 @@ mod raft_server;
 mod rpc_server;
 mod event;
 mod entry_log;
+mod store;
 
 use docopt::Docopt;
 use rpc::ServerId;
@@ -38,6 +38,14 @@ Options:
 ";
 
 
+struct Store;
+
+impl store::Store for Store {
+    fn apply(&mut self, entry: &rpc::Entry) {
+    }
+}
+
+
 fn main() {
     env_logger::init().unwrap();
     let args = Docopt::new(USAGE)
@@ -48,6 +56,6 @@ fn main() {
     let mut servers = args.get_vec("--peers");
     servers.push(addr.as_str());
     let server_ids = servers.iter().map(|s| ServerId(s.to_string())).collect();
-    let server = raft_server::RaftServer::new(ServerId(addr.to_owned()), server_ids);
+    let server = raft_server::RaftServer::new(ServerId(addr.to_owned()), Store, server_ids);
     server.run_forever();
 }

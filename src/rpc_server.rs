@@ -1,17 +1,17 @@
 use std::sync::{Mutex, Arc};
 use ::rpc;
 use ::raft_node::{RaftNode, LiveRaftNode};
+use ::store::Store;
 
+pub struct RpcServer<S: Store + 'static>(Arc<Mutex<Option<RaftNode<S>>>>);
 
-pub struct RpcServer(Arc<Mutex<Option<RaftNode>>>);
-
-impl RpcServer {
-    pub fn new(raft_node: Arc<Mutex<Option<RaftNode>>>) -> Self {
+impl<S: Store + 'static> RpcServer<S> {
+    pub fn new(raft_node: Arc<Mutex<Option<RaftNode<S>>>>) -> Self {
         RpcServer(raft_node)
     }
 }
 
-impl rpc::Service for RpcServer {
+impl<S: Store + 'static> rpc::Service for RpcServer<S> {
     fn on_request_vote(&self, req: rpc::VoteReq) -> rpc::VoteResp {
         info!("Received Vote <----------------- {:?}", &req);
         let mut raft_node = self.0.lock().unwrap();

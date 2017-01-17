@@ -11,10 +11,10 @@ use ::event::Event;
 use ::rpc;
 use ::rpc_server;
 use ::rpc::{Service, ServerId};
+use ::store::Store;
 
-
-pub struct RaftServer {
-    pub raft_node: Arc<Mutex<Option<RaftNode>>>,
+pub struct RaftServer<S: Store + 'static> {
+    pub raft_node: Arc<Mutex<Option<RaftNode<S>>>>,
     noti_center: Receiver<Event>,
     peers: HashMap<ServerId, tarpc::Result<rpc::Client>>,
     #[allow(dead_code)]
@@ -26,11 +26,11 @@ pub struct RaftServer {
 }
 
 
-impl RaftServer {
-    pub fn new(addr: ServerId, servers: Vec<ServerId>) -> RaftServer {
+impl<S: Store + 'static> RaftServer<S> {
+    pub fn new(addr: ServerId, store: S, servers: Vec<ServerId>) -> RaftServer<S> {
         let (sender, receiver) = channel();
         let peers = servers.iter().map(|s| (s.to_owned(), rpc::Client::new(&s.0))).collect();
-        let raft_node = Arc::new(Mutex::new(Some(RaftNode::new(addr.clone(), servers, sender.clone()))));
+        let raft_node = Arc::new(Mutex::new(Some(RaftNode::new(addr.clone(), store, servers, sender.clone()))));
         let s = rpc_server::RpcServer::new(raft_node.clone());
         let server_handle = s.spawn_with_config(addr.0.as_str(), tarpc::Config { timeout: Some(Duration::new(5, 0)) }).expect("listen");
 

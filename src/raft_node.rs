@@ -4,24 +4,24 @@ use std::fmt;
 use ::node::{Node, Leader, Follower, Candidate};
 use ::event::Event;
 use ::rpc::{ServerId, AppendEntriesReq, AppendEntriesResp, VoteReq, VoteResp};
-
+use ::store::Store;
 
 #[derive(Debug)]
-pub enum RaftNode {
-    Leader(Node<Leader>),
-    Follower(Node<Follower>),
-    Candidate(Node<Candidate>),
+pub enum RaftNode<S: Store> {
+    Leader(Node<Leader, S>),
+    Follower(Node<Follower, S>),
+    Candidate(Node<Candidate, S>),
 }
 
 
-impl RaftNode {
-    pub fn new(server_id: ServerId, servers: Vec<ServerId>, noti_center: Sender<Event>) -> Self {
-        RaftNode::Follower(Node::new(server_id, servers, noti_center))
+impl<S: Store> RaftNode<S> {
+    pub fn new(server_id: ServerId, store: S, servers: Vec<ServerId>, noti_center: Sender<Event>) -> Self {
+        RaftNode::Follower(Node::new(server_id, store, servers, noti_center))
     }
 }
 
 
-impl fmt::Display for RaftNode {
+impl<S: Store> fmt::Display for RaftNode<S> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let x = match *self {
             RaftNode::Leader(ref x) => format!("{}", x),
