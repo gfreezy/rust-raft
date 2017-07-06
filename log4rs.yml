@@ -1,0 +1,10 @@
+appenders:
+  stdout:
+    kind: console
+    encoder:
+      pattern: "{d} {T} {l}:{f}:{L} {m}{n}"
+
+root:
+  level: error
+  appenders:
+    - stdout

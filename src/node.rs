@@ -1,19 +1,26 @@
 use time;
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::Sender;
+use std::sync::{Arc, Mutex};
 use rand;
 use std::fmt;
 
 use ::rpc::{ServerId, Term, EntryIndex, Entry, VoteReq, VoteResp, AppendEntriesReq, AppendEntriesResp};
-use ::event::Event;
-use ::raft_node::LiveRaftNode;
 use ::entry_log::EntryLog;
 use ::store::Store;
+use ::request::Request;
 
 
 // 500ms timeout
 const ELECTION_TIMEOUT: u64 = 1000;
 const HEARTBEAT_INTERVAL: u64 = 100;
+
+
+pub trait NodeListener {
+    fn on_append_entries(&mut self, req: &AppendEntriesReq) -> (AppendEntriesResp, bool);
+    fn on_request_vote(&mut self, req: &VoteReq) -> (VoteResp, bool);
+    fn on_clock_tick(&mut self) -> bool;
+}
 
 
 #[derive(Debug)]
@@ -24,15 +31,15 @@ pub struct Node<T, S: Store> {
     log: EntryLog,
     commit_index: EntryIndex,
     last_applied_id: EntryIndex,
-    noti_center: Sender<Event>,
+    noti_center: Arc<Mutex<Sender<Request>>>,
     servers: HashSet<ServerId>,
     state: T,
     store: S,
 }
 
-impl<T, S:Store> Node<T, S> {
-    fn trigger(&self, event: Event) {
-        self.noti_center.send(event).expect("send event");
+impl<T, S: Store> Node<T, S> {
+    fn trigger(&self, req: Request) {
+        self.noti_center.try_lock().expect("lock noti center").send(req).expect("send event");
     }
 
     fn apply_log(&mut self) {
@@ -61,7 +68,7 @@ pub struct Follower {
 }
 
 impl<S: Store> Node<Follower, S> {
-    pub fn new(server_id: ServerId, store: S, servers: Vec<ServerId>, noti_center: Sender<Event>) -> Self {
+    pub fn new(server_id: ServerId, store: S, servers: Vec<ServerId>, noti_center: Arc<Mutex<Sender<Request>>>) -> Self {
         Node {
             server_id: server_id,
             current_term: Term(0),
@@ -130,8 +137,8 @@ impl<S: Store> From<Node<Leader, S>> for Node<Follower, S> {
     }
 }
 
-impl<S: Store> LiveRaftNode for Node<Follower, S> {
-    fn on_request_vote(&mut self, req: &VoteReq) -> VoteResp {
+impl<S: Store> NodeListener for Node<Follower, S> {
+    fn on_request_vote(&mut self, req: &VoteReq) -> (VoteResp, bool) {
         if req.term > self.current_term {
             self.current_term = req.term;
             self.voted_for = None;
@@ -147,20 +154,20 @@ impl<S: Store> LiveRaftNode for Node<Follower, S> {
 
 
         info!("{} term: {}, vote granted: {}", self, self.current_term, vote_granted);
-        VoteResp {
+        (VoteResp {
             term: self.current_term,
             vote_granted: vote_granted,
-        }
+        }, false)
     }
 
-    fn on_append_entries(&mut self, req: &AppendEntriesReq) -> AppendEntriesResp {
+    fn on_append_entries(&mut self, req: &AppendEntriesReq) -> (AppendEntriesResp, bool) {
         self.state.heartbeat_received_at = time::now_utc();
 
         if req.term < self.current_term {
-            return AppendEntriesResp {
+            return (AppendEntriesResp {
                 term: self.current_term,
                 success: false,
-            };
+            }, false);
         } else if req.term > self.current_term {
             self.current_term = req.term;
             self.voted_for = None;
@@ -169,10 +176,10 @@ impl<S: Store> LiveRaftNode for Node<Follower, S> {
         if req.prev_log_index > EntryIndex(0) {
             let prev_entry = self.log.get(req.prev_log_index);
             if prev_entry.is_none() || prev_entry.unwrap().term != req.prev_log_term {
-                return AppendEntriesResp {
+                return (AppendEntriesResp {
                     term: self.current_term,
                     success: false,
-                };
+                }, false);
             }
         }
 
@@ -182,12 +189,12 @@ impl<S: Store> LiveRaftNode for Node<Follower, S> {
             match term {
                 None => {
                     self.log.push((*entry).clone());
-                },
+                }
                 Some(t) => {
                     if t != self.current_term {
                         self.log.truncate(index);
                     }
-                },
+                }
             }
         }
 
@@ -203,17 +210,18 @@ impl<S: Store> LiveRaftNode for Node<Follower, S> {
 
         info!("{} term: {}, on append entries", self, self.current_term);
 
-        AppendEntriesResp {
+        (AppendEntriesResp {
             term: self.current_term,
             success: true,
-        }
+        }, false)
     }
 
-    fn on_clock_tick(&mut self) {
+    fn on_clock_tick(&mut self) -> bool {
         let period_since_last_heartbeat = time::now_utc() - self.state.heartbeat_received_at;
         if period_since_last_heartbeat.num_milliseconds() > ELECTION_TIMEOUT as i64 {
-            self.trigger(Event::ConvertToCandidate);
+            return true;
         }
+        false
     }
 }
 
@@ -249,21 +257,20 @@ impl<S: Store> Node<Candidate, S> {
                 last_log_index: self.log.last_index(),
                 last_log_term: self.log.last_entry_term()
             };
-            self.trigger(Event::SendRequestVote((server.clone(), req)));
+            self.trigger(Request::VoteFor(server.clone(), req));
         }
     }
 
-    pub fn on_receive_vote_request(&mut self, peer: &ServerId, resp: VoteResp) {
+    pub fn on_receive_vote_request(&mut self, peer: &ServerId, resp: VoteResp) -> bool {
         if resp.term > self.current_term {
             self.current_term = resp.term;
-            info!("before trigger ConvertToFollower");
-            self.trigger(Event::ConvertToFollower);
-            info!("after trigger ConvertToFollower");
+            return true;
         }
 
         if resp.vote_granted {
             self.state.votes.insert(peer.clone());
         }
+        false
     }
 }
 
@@ -299,37 +306,35 @@ impl<S: Store> From<Node<Follower, S>> for Node<Candidate, S> {
 }
 
 
-impl<S: Store> LiveRaftNode for Node<Candidate, S> {
-    fn on_request_vote(&mut self, req: &VoteReq) -> VoteResp {
+impl<S: Store> NodeListener for Node<Candidate, S> {
+    fn on_request_vote(&mut self, req: &VoteReq) -> (VoteResp, bool) {
+        let mut to_follower = false;
         if req.term > self.current_term {
             self.current_term = req.term;
-            info!("before trigger");
-            self.trigger(Event::ConvertToFollower);
-            info!("after trigger");
+            to_follower = true;
         }
 
-        VoteResp {
+        (VoteResp {
             term: self.current_term,
             vote_granted: false,
-        }
+        }, to_follower)
     }
 
-    fn on_append_entries(&mut self, req: &AppendEntriesReq) -> AppendEntriesResp {
+    fn on_append_entries(&mut self, req: &AppendEntriesReq) -> (AppendEntriesResp, bool) {
         if req.term > self.current_term {
             self.current_term = req.term;
         }
 
-        self.trigger(Event::ConvertToFollower);
-        AppendEntriesResp {
+        (AppendEntriesResp {
             term: self.current_term,
             success: false,
-        }
+        }, true)
     }
 
-    fn on_clock_tick(&mut self) {
+    fn on_clock_tick(&mut self) -> bool {
         {
             if self.state.votes.len() * 2 > self.servers.len() {
-                self.trigger(Event::ConvertToLeader);
+                return true;
             }
         }
 
@@ -337,6 +342,7 @@ impl<S: Store> LiveRaftNode for Node<Candidate, S> {
         if period_since_last_heartbeat.num_milliseconds() > self.state.election_timeout as i64 {
             self.new_election()
         }
+        false
     }
 }
 
@@ -346,11 +352,13 @@ pub struct Leader {
     next_index: HashMap<ServerId, EntryIndex>,
     match_index: HashMap<ServerId, EntryIndex>,
     heartbeat_sent_at: time::Tm,
+    heartbeats: HashSet<ServerId>,
 }
 
 
 impl<S: Store> Node<Leader, S> {
-    fn send_heartbeat(&self) {
+    fn send_heartbeat(&mut self) {
+        self.state.heartbeats.clear();
         for s in &self.peers() {
             self.send_append_entries_request(s);
         }
@@ -374,7 +382,7 @@ impl<S: Store> Node<Leader, S> {
             prev_log_term: self.log.prev_last_entry_term(),
         };
 
-        self.trigger(Event::SendAppendEntries((peer.clone(), req)));
+        self.trigger(Request::AppendEntriesFor(peer.clone(), req));
     }
 
     #[allow(dead_code)]
@@ -384,15 +392,13 @@ impl<S: Store> Node<Leader, S> {
         }
     }
 
-    pub fn on_receive_append_entries_request(&mut self, peer: &ServerId, resp: AppendEntriesResp) {
-        self.state.heartbeat_sent_at = time::now_utc();
+    pub fn on_receive_heartbeat(&mut self, peer: &ServerId, resp: AppendEntriesResp) -> bool {
         let last_log_index = self.log.last_index();
 
         if resp.term > self.current_term {
             self.current_term = resp.term;
-            self.trigger(Event::ConvertToFollower);
             info!("on_receive_append_entries_request: Leader Convert to follower");
-            return;
+            return true;
         }
 
         // move next_index backwards by one
@@ -403,17 +409,47 @@ impl<S: Store> Node<Leader, S> {
 
             self.state.next_index.insert(peer.clone(), next_index.prev_or_zero());
             self.send_append_entries_request(peer);
-            return;
+            return false;
         }
 
-        info!("on_receive_append_entries_request: before insert");
+        self.state.heartbeats.insert(peer.clone());
+        let up_to_date_count = self.state.heartbeats.len();
+        info!("update to date count: {}", up_to_date_count);
+        if up_to_date_count * 2 >= self.servers.len() {
+            self.state.heartbeat_sent_at = time::now_utc();
+            println!("heartbeat {:?} {:?}", time::now(), self.current_term);
+        }
+        false
+    }
+
+    pub fn on_receive_append_entries_request(&mut self, peer: &ServerId, resp: AppendEntriesResp) -> bool {
+        let last_log_index = self.log.last_index();
+
+        if resp.term > self.current_term {
+            self.current_term = resp.term;
+            info!("on_receive_append_entries_request: Leader Convert to follower");
+            return true;
+        }
+
+        // move next_index backwards by one
+        if !resp.success {
+            info!("{}: on_receive_append_entries_request: not success", peer);
+            let next_index = self.state.next_index.get(peer).map_or_else(|| last_log_index + 1, |i| *i);
+            info!("{}: on_receive_append_entries_request: next index {}", peer, next_index);
+
+            self.state.next_index.insert(peer.clone(), next_index.prev_or_zero());
+            self.send_append_entries_request(peer);
+            return false;
+        }
+
+        info!("on_receive_append_entries_request: before insert. last_log_index: {}", last_log_index);
         self.state.match_index.insert(peer.to_owned(), last_log_index);
         self.state.next_index.insert(peer.to_owned(), last_log_index + 1);
 
         let mut index = self.commit_index + 1;
         loop {
             info!("in loop: index {}, ", index);
-            let up_to_date_count = self.state.match_index.values().take_while(|&&match_index| match_index >= index).count();
+            let up_to_date_count = self.state.match_index.values().filter(|&&match_index| match_index >= index).count();
             info!("update to date count: {}", up_to_date_count);
             if up_to_date_count * 2 < self.servers.len() {
                 break;
@@ -423,12 +459,14 @@ impl<S: Store> Node<Leader, S> {
             info!("term: {:?}, current_term: {:?}", term, self.current_term);
             if term == Some(self.current_term) {
                 self.commit_index = index;
+                self.state.heartbeat_sent_at = time::now_utc();
             } else {
                 break;
             }
 
             index.incr();
         }
+        false
     }
 
     #[allow(dead_code)]
@@ -452,38 +490,40 @@ impl<S: Store> fmt::Display for Node<Leader, S> {
     }
 }
 
-impl<S: Store> LiveRaftNode for Node<Leader, S> {
-    fn on_append_entries(&mut self, req: &AppendEntriesReq) -> AppendEntriesResp {
+impl<S: Store> NodeListener for Node<Leader, S> {
+    fn on_append_entries(&mut self, req: &AppendEntriesReq) -> (AppendEntriesResp, bool) {
+        let mut to_follower = false;
         if req.term > self.current_term {
             self.current_term = req.term;
-            self.trigger(Event::ConvertToFollower);
+            to_follower = true;
         }
 
-        AppendEntriesResp {
+        (AppendEntriesResp {
             term: self.current_term,
             success: false,
-        }
+        }, to_follower)
     }
 
-    fn on_request_vote(&mut self, req: &VoteReq) -> VoteResp {
+    fn on_request_vote(&mut self, req: &VoteReq) -> (VoteResp, bool) {
+        let mut to_follower = false;
         if req.term > self.current_term {
             self.current_term = req.term;
-            info!("before trigger");
-            self.trigger(Event::ConvertToFollower);
-            info!("after trigger");
+            to_follower = true;
         }
 
-        VoteResp {
+        (VoteResp {
             term: self.current_term,
             vote_granted: false,
-        }
+        }, to_follower)
     }
 
-    fn on_clock_tick(&mut self) {
+    fn on_clock_tick(&mut self) -> bool {
         let period_since_last_heartbeat = time::now_utc() - self.state.heartbeat_sent_at;
         if period_since_last_heartbeat.num_milliseconds() > HEARTBEAT_INTERVAL as i64 {
+            info!("leader: send heartbeat");
             self.send_heartbeat()
         }
+        false
     }
 }
 
@@ -507,7 +547,7 @@ impl<S: Store> From<Node<Candidate, S>> for Node<Leader, S> {
             map
         };
 
-        let node = Node {
+        let mut node = Node {
             server_id: val.server_id,
             current_term: val.current_term,
             voted_for: val.voted_for,
@@ -519,6 +559,7 @@ impl<S: Store> From<Node<Candidate, S>> for Node<Leader, S> {
                 next_index: next_index,
                 match_index: match_index,
                 heartbeat_sent_at: time::now_utc(),
+                heartbeats: HashSet::new(),
             },
             servers: val.servers,
             store: val.store,
