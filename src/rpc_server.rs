@@ -1,46 +1,50 @@
-use std::sync::{Mutex, Arc};
-use ::rpc;
-use ::raft_node::{RaftNode, LiveRaftNode};
-use ::store::Store;
+use std::sync::Mutex;
+use std::sync::mpsc::{Sender, channel};
+use ::rpc::{AppendEntriesReq, AppendEntriesResp, VoteReq, VoteResp, Service};
+use ::request::{Request, VoteRequest, AppendEntriesRequest};
 
-pub struct RpcServer<S: Store + 'static>(Arc<Mutex<Option<RaftNode<S>>>>);
 
-impl<S: Store + 'static> RpcServer<S> {
-    pub fn new(raft_node: Arc<Mutex<Option<RaftNode<S>>>>) -> Self {
-        RpcServer(raft_node)
+pub struct RpcServer(Mutex<Sender<Request>>);
+
+
+impl RpcServer {
+    pub fn new(sender: Sender<Request>) -> Self {
+        RpcServer(Mutex::new(sender))
     }
 }
 
-impl<S: Store + 'static> rpc::Service for RpcServer<S> {
-    fn on_request_vote(&self, req: rpc::VoteReq) -> rpc::VoteResp {
-        info!("Received Vote <----------------- {:?}", &req);
-        let mut raft_node = self.0.lock().unwrap();
-        info!("\tAquired lock");
 
-        let resp = match *raft_node {
-            Some(RaftNode::Follower(ref mut node)) => node.on_request_vote(&req),
-            Some(RaftNode::Candidate(ref mut node)) => node.on_request_vote(&req),
-            Some(RaftNode::Leader(ref mut node)) => node.on_request_vote(&req),
-            None => unreachable!(),
-        };
+impl Service for RpcServer {
+    fn on_request_vote(&self, req: VoteReq) -> VoteResp {
+        info!("Received Vote <----------------- {:?}", &req);
+        let (ret_sender, ret_receiver) = channel::<VoteResp>();
+        {
+            let sender = self.0.try_lock().unwrap();
+            let req = Request::VoteRequest(VoteRequest {
+                data: req,
+                ret: ret_sender,
+            });
+            sender.send(req).expect("send vote req");
+        }
+        info!("\tReceiving vote resp");
+        let resp = ret_receiver.recv().expect("receive vote resp");
         info!("\tFinish request ---------------> {:?}", &resp);
         resp
     }
 
-    fn on_append_entries(&self, req: rpc::AppendEntriesReq) -> rpc::AppendEntriesResp {
-        info!("Received Entry <----------------- {:?}", &req);
-
-        let mut raft_node = self.0.lock().unwrap();
-        info!("\tAquired lock");
-
-        let resp = match *raft_node {
-            Some(RaftNode::Follower(ref mut node)) => node.on_append_entries(&req),
-            Some(RaftNode::Candidate(ref mut node)) => node.on_append_entries(&req),
-            Some(RaftNode::Leader(ref mut node)) => node.on_append_entries(&req),
-            None => unreachable!(),
-        };
+    fn on_append_entries(&self, req: AppendEntriesReq) -> AppendEntriesResp {
+        info!("Received entries <----------------- {:?}", &req);
+        let (ret_sender, ret_receiver) = channel::<AppendEntriesResp>();
+        {
+            let sender = self.0.try_lock().unwrap();
+            let req = Request::AppendEntriesRequest(AppendEntriesRequest {
+                data: req,
+                ret: ret_sender,
+            });
+            sender.send(req).expect("send append entries req");
+        }
+        let resp = ret_receiver.recv().expect("receive append entries resp");
         info!("\tFinish request ---------------> {:?}", &resp);
-
         resp
     }
 }
