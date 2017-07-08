@@ -26,7 +26,7 @@ mod connection_pool;
 use docopt::Docopt;
 use rpc::{ServerId, Service};
 use std::sync::mpsc::channel;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use std::time::Duration;
 use std::thread;
 use raft_node::RaftStore;
@@ -67,9 +67,8 @@ fn main() {
     let server_ids: Vec<ServerId> = servers.iter().map(|s| ServerId(s.to_string())).collect();
 
     let (sender, receiver) = channel::<request::Request>();
-    let arc_sender = Arc::new(Mutex::new(sender));
 
-    let sender2 = arc_sender.clone();
+    let sender2 = sender.clone();
     let handler = thread::Builder::new()
         .name("eventloop".into())
         .spawn(move || {
@@ -81,19 +80,20 @@ fn main() {
                 use raft_node::LiveRaftStore;
                 let beat = receiver.recv().expect("recv");
 
+                info!("receive");
                 match beat {
                     Request::TickRequest(req) => {
                         store.on_clock_tick();
                         let _ = req.ret.send(());
-                    },
+                    }
                     Request::VoteRequest(vote_req) => {
                         let resp = store.on_request_vote(&vote_req.data);
                         let _ = vote_req.ret.send(resp);
-                    },
+                    }
                     Request::AppendEntriesRequest(append_req) => {
                         let resp = store.on_append_entries(&append_req.data);
                         let _ = append_req.ret.send(resp);
-                    },
+                    }
                     Request::VoteFor(server_id, req) => {
                         crossbeam::scope(|scope| {
                             scope.spawn(|| {
@@ -108,9 +108,8 @@ fn main() {
                                 }
                             });
                         });
-                    },
+                    }
                     Request::AppendEntriesFor(server_id, req) => {
-                        info!("append req: {:?} {:?}", server_id, req);
                         let is_heartbeat = req.entries.is_empty();
                         crossbeam::scope(|scope| {
                             scope.spawn(|| {
@@ -125,22 +124,22 @@ fn main() {
                                     }
                                 });
                                 if ret.is_none() {
-                                    error!("remove client {}", &server_id);
                                     rpool.remove_client(&server_id);
                                 }
                             });
                         });
+
                     }
                 }
             }
         }).expect("unwrap eventloop thread");
 
-    let s = rpc_server::RpcServer::new(arc_sender.clone());
+    let s = rpc_server::RpcServer::new(sender.clone());
     let _server_handle = s.spawn_with_config(addr.as_str(), tarpc::Config {
         timeout: Some(Duration::new(5, 0))
     }).expect("listen");
 
-    let clock_sender = arc_sender.clone();
+    let clock_sender = sender.clone();
     let wall_clock = clock::Clock::new(clock_sender);
     let timer = timer::Timer::new();
     let _guard = timer.schedule_repeating(time::Duration::milliseconds(100), move || {

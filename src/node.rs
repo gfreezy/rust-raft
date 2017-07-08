@@ -1,7 +1,6 @@
 use time;
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::Sender;
-use std::sync::{Arc, Mutex};
 use rand;
 use std::fmt;
 
@@ -31,7 +30,7 @@ pub struct Node<T, S: Store> {
     log: EntryLog,
     commit_index: EntryIndex,
     last_applied_id: EntryIndex,
-    noti_center: Arc<Mutex<Sender<Request>>>,
+    noti_center: Sender<Request>,
     servers: HashSet<ServerId>,
     state: T,
     store: S,
@@ -39,7 +38,7 @@ pub struct Node<T, S: Store> {
 
 impl<T, S: Store> Node<T, S> {
     fn trigger(&self, req: Request) {
-        self.noti_center.try_lock().expect("lock noti center").send(req).expect("send event");
+        self.noti_center.send(req).expect("send event");
     }
 
     fn apply_log(&mut self) {
@@ -68,7 +67,7 @@ pub struct Follower {
 }
 
 impl<S: Store> Node<Follower, S> {
-    pub fn new(server_id: ServerId, store: S, servers: Vec<ServerId>, noti_center: Arc<Mutex<Sender<Request>>>) -> Self {
+    pub fn new(server_id: ServerId, store: S, servers: Vec<ServerId>, noti_center: Sender<Request>) -> Self {
         Node {
             server_id: server_id,
             current_term: Term(0),

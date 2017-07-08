@@ -1,15 +1,15 @@
-use std::sync::{Mutex, Arc};
+use std::sync::Mutex;
 use std::sync::mpsc::{Sender, channel};
 use ::rpc::{AppendEntriesReq, AppendEntriesResp, VoteReq, VoteResp, Service};
 use ::request::{Request, VoteRequest, AppendEntriesRequest};
 
 
-pub struct RpcServer(Arc<Mutex<Sender<Request>>>);
+pub struct RpcServer(Mutex<Sender<Request>>);
 
 
 impl RpcServer {
-    pub fn new(sender: Arc<Mutex<Sender<Request>>>) -> Self {
-        RpcServer(sender)
+    pub fn new(sender: Sender<Request>) -> Self {
+        RpcServer(Mutex::new(sender))
     }
 }
 

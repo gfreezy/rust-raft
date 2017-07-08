@@ -1,5 +1,4 @@
 use std::sync::mpsc::Sender;
-use std::sync::{Arc, Mutex};
 use std::fmt;
 
 use ::node::{Node, Leader, Follower, Candidate};
@@ -34,7 +33,7 @@ pub struct RaftStore<S: Store>(Option<RaftNode<S>>);
 
 
 impl<S: Store> RaftStore<S> {
-    pub fn new(server_id: ServerId, store: S, servers: Vec<ServerId>, noti_center: Arc<Mutex<Sender<request::Request>>>) -> Self {
+    pub fn new(server_id: ServerId, store: S, servers: Vec<ServerId>, noti_center: Sender<request::Request>) -> Self {
         RaftStore(Some(RaftNode::Follower(Node::new(server_id, store, servers, noti_center))))
     }
 
