@@ -5,6 +5,6 @@ appenders:
       pattern: "{d} {T} {l}:{f}:{L} {m}{n}"
 
 root:
-  level: error
+  level: info
   appenders:
     - stdout

@@ -26,7 +26,6 @@ mod connection_pool;
 use docopt::Docopt;
 use rpc::{ServerId, Service};
 use std::sync::mpsc::channel;
-use std::sync::Mutex;
 use std::time::Duration;
 use std::thread;
 use raft_node::RaftStore;
@@ -72,7 +71,7 @@ fn main() {
     let handler = thread::Builder::new()
         .name("eventloop".into())
         .spawn(move || {
-            let pool = Mutex::new(connection_pool::ConnectionPool::new(server_ids.clone()));
+            let mut pool = connection_pool::ConnectionPool::new(server_ids.clone());
             let mut store = RaftStore::new(server_id, Store, server_ids, sender2);
 
             loop {
@@ -97,15 +96,9 @@ fn main() {
                     Request::VoteFor(server_id, req) => {
                         crossbeam::scope(|scope| {
                             scope.spawn(|| {
-                                let mut rpool = pool.lock().unwrap();
-                                let ret = rpool.get_client(&server_id).and_then(|c| {
-                                    c.on_request_vote(req).ok()
-                                }).map(|resp| {
+                                let _ = pool.on_request_vote(&server_id, req).map(|resp| {
                                     store.on_receive_vote_request(&server_id, resp)
                                 });
-                                if ret.is_none() {
-                                    rpool.remove_client(&server_id);
-                                }
                             });
                         });
                     }
@@ -113,22 +106,15 @@ fn main() {
                         let is_heartbeat = req.entries.is_empty();
                         crossbeam::scope(|scope| {
                             scope.spawn(|| {
-                                let mut rpool = pool.lock().unwrap();
-                                let ret = rpool.get_client(&server_id).and_then(|c| {
-                                    c.on_append_entries(req).ok()
-                                }).map(|resp| {
+                                let _ = pool.on_append_entries(&server_id, req).map(|resp| {
                                     if is_heartbeat {
                                         store.on_receive_heartbeat(&server_id, resp)
                                     } else {
                                         store.on_receive_append_entries_request(&server_id, resp)
                                     }
                                 });
-                                if ret.is_none() {
-                                    rpool.remove_client(&server_id);
-                                }
                             });
                         });
-
                     }
                 }
             }
