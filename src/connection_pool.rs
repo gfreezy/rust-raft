@@ -1,61 +1,84 @@
-use std::collections::HashMap;
-use tarpc;
+use std::io;
+use futures::{Future, Stream};
+use futures::future::join_all;
+use hyper;
+use hyper::{Client, Request};
+use hyper::client::HttpConnector;
+use tokio_core::reactor::Core;
 
-use ::rpc::{ServerId, Client, VoteReq, VoteResp, AppendEntriesReq, AppendEntriesResp};
+use serde_json;
+
+use ::rpc::{ServerId, VoteReq, VoteResp, AppendEntriesReq, AppendEntriesResp};
 
 pub struct ConnectionPool {
-    conns: HashMap<ServerId, tarpc::Result<Client>>,
+    core: Core,
+    client: Client<HttpConnector>
 }
 
 impl ConnectionPool {
-    pub fn new(server_ids: Vec<ServerId>) -> Self {
-        let mut map = HashMap::new();
-        for server_id in server_ids {
-            let c = ConnectionPool::create_client(&server_id);
-            map.insert(server_id, c);
-        }
+    pub fn new() -> Self {
+        let core = Core::new().expect("init core");
+        let client = Client::new(&core.handle());
         ConnectionPool {
-            conns: map,
+            core: core,
+            client: client,
         }
     }
 
-    fn get_client(&mut self, server_id: &ServerId) -> tarpc::Result<&Client> {
-        let v = self.conns.entry(server_id.clone()).or_insert_with(|| Client::new(server_id.addr()));
-        let ret = if v.is_ok() {
-            v
-        } else {
-            let c = ConnectionPool::create_client(server_id);
-            *v = c;
-            v
-        };
-        ret.as_ref().map_err(|err| err.clone())
-    }
+    pub fn on_request_vote(&mut self, reqs: Vec<(ServerId, VoteReq)>) -> ::errors::Result<Vec<(ServerId, VoteReq, VoteResp)>> {
+        let mut resps = Vec::new();
+        for (server_id, vote_req) in reqs {
+            let uri = format!("http://{}/raft/on_request_vote", server_id.addr()).parse().unwrap();
+            let mut http_req: Request<hyper::Body> = Request::new(hyper::Method::Post, uri);
+            let body = serde_json::to_string(&vote_req).unwrap();
+            http_req.headers_mut().set(hyper::header::ContentLength(body.len() as u64));
+            http_req.set_body(body);
+            http_req.headers_mut().set(hyper::header::ContentType::json());
 
-    pub fn remove_client(&mut self, server_id: &ServerId) {
-        self.conns.remove(server_id);
-    }
 
-    fn create_client(server_id: &ServerId) -> tarpc::Result<Client> {
-        Client::with_config(server_id.addr(), tarpc::Config { timeout: None })
-    }
-
-    pub fn on_request_vote(&mut self, server_id: &ServerId, req: VoteReq) -> tarpc::Result<VoteResp> {
-        let ret = self.get_client(server_id).and_then(|c| {
-            c.on_request_vote(req)
-        });
-        if ret.is_err() {
-            self.remove_client(server_id);
+            let resp = self.client.request(http_req).and_then(|res| {
+                res.body().concat2()
+            }).and_then(|body| {
+                serde_json::from_slice::<VoteResp>(&body)
+                    .map(|resp| (server_id, vote_req, resp))
+                    .map_err(|e| hyper::Error::from(
+                        io::Error::new(
+                            io::ErrorKind::Other,
+                            e
+                        )
+                    ))
+            });
+            resps.push(resp);
         }
-        ret
+
+        Ok(self.core.run(join_all(resps))?)
     }
 
-    pub fn on_append_entries(&mut self, server_id: &ServerId, req: AppendEntriesReq) -> tarpc::Result<AppendEntriesResp> {
-        let ret = self.get_client(server_id).and_then(|c| {
-            c.on_append_entries(req)
-        });
-        if ret.is_err() {
-            self.remove_client(server_id);
+    pub fn on_append_entries(&mut self, reqs: Vec<(ServerId, AppendEntriesReq)>) -> ::errors::Result<Vec<(ServerId, AppendEntriesReq, AppendEntriesResp)>> {
+        let mut resps = Vec::new();
+        for (server_id, append_req) in reqs {
+            let uri = format!("http://{}/raft/on_append_entries", server_id.addr()).parse().unwrap();
+            let mut http_req = Request::new(hyper::Method::Post, uri);
+            let body = serde_json::to_string(&append_req).unwrap();
+            http_req.headers_mut().set(hyper::header::ContentLength(body.len() as u64));
+            http_req.set_body(body);
+            http_req.headers_mut().set(hyper::header::ContentType::json());
+
+            let resp = self.client.request(http_req).and_then(|res| {
+                res.body().concat2()
+            }).and_then(|body| {
+                let d: hyper::Result<(ServerId, AppendEntriesReq, AppendEntriesResp)> = serde_json::from_slice(&body).map(|resp| (server_id, append_req, resp))
+                    .map_err(|e| hyper::Error::from(
+                        io::Error::new(
+                            io::ErrorKind::Other,
+                            e
+                        )
+                    ));
+                d
+            });
+            resps.push(resp);
         }
-        ret
+
+        Ok(self.core.run(join_all(resps))?)
     }
 }

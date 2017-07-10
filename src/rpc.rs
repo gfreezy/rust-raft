@@ -102,8 +102,9 @@ pub struct AppendEntriesResp {
     pub success: bool,
 }
 
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Hash, Clone)]
+pub struct CommandReq(pub String);
 
-service! {
-    rpc on_request_vote(req: VoteReq) -> VoteResp;
-    rpc on_append_entries(req: AppendEntriesReq) -> AppendEntriesResp;
-}
+
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Hash, Clone)]
+pub struct CommandResp(pub String);

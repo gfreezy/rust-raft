@@ -2,14 +2,14 @@ use std::sync::mpsc::Sender;
 use std::fmt;
 
 use ::node::{Node, Leader, Follower, Candidate};
-use ::rpc::{ServerId, AppendEntriesReq, AppendEntriesResp, VoteReq, VoteResp};
+use ::rpc::{ServerId, AppendEntriesReq, AppendEntriesResp, VoteReq, VoteResp, CommandResp, CommandReq};
 use ::store::Store;
 use ::node::NodeListener;
 use ::request;
 
 
 #[derive(Debug)]
-pub enum RaftNode<S: Store> {
+enum RaftNode<S: Store> {
     Leader(Node<Leader, S>),
     Follower(Node<Follower, S>),
     Candidate(Node<Candidate, S>),
@@ -37,15 +37,15 @@ impl<S: Store> RaftStore<S> {
         RaftStore(Some(RaftNode::Follower(Node::new(server_id, store, servers, noti_center))))
     }
 
-    pub fn on_receive_vote_request(&mut self, peer: &ServerId, resp: VoteResp) {
+    pub fn on_receive_vote_request(&mut self, peer: &ServerId, req: VoteReq, resp: VoteResp) {
         use self::RaftNode::*;
 
         let mut raft_node = self.0.take().unwrap();
 
         let to_follower = match raft_node {
             Candidate(ref mut node) => {
-                node.on_receive_vote_request(peer, resp)
-            },
+                node.on_receive_vote_request(peer, req, resp)
+            }
             _ => {
                 unreachable!()
             }
@@ -64,15 +64,15 @@ impl<S: Store> RaftStore<S> {
         );
     }
 
-    pub fn on_receive_append_entries_request(&mut self, peer: &ServerId, resp: AppendEntriesResp) {
+    pub fn on_receive_append_entries_request(&mut self, peer: &ServerId, req: AppendEntriesReq, resp: AppendEntriesResp) {
         use self::RaftNode::*;
 
         let mut raft_node = self.0.take().unwrap();
 
         let to_follower = match raft_node {
             Leader(ref mut node) => {
-                node.on_receive_append_entries_request(peer, resp)
-            },
+                node.on_receive_append_entries_request(peer, req, resp)
+            }
             _ => {
                 unreachable!()
             }
@@ -91,31 +91,11 @@ impl<S: Store> RaftStore<S> {
         );
     }
 
-    pub fn on_receive_heartbeat(&mut self, peer: &ServerId, resp: AppendEntriesResp) {
-        use self::RaftNode::*;
-
-        let mut raft_node = self.0.take().unwrap();
-
-        let to_follower = match raft_node {
-            Leader(ref mut node) => {
-                node.on_receive_heartbeat(peer, resp)
-            },
-            _ => {
-                unreachable!()
-            }
-        };
-
-        self.0 = Some(
-            if to_follower {
-                match raft_node {
-                    Leader(node) => RaftNode::Follower(node.into()),
-                    Follower(node) => RaftNode::Follower(node),
-                    Candidate(node) => RaftNode::Follower(node.into())
-                }
-            } else {
-                raft_node
-            }
-        );
+    pub fn on_receive_command(&mut self, command: CommandReq) -> CommandResp {
+        match self.0 {
+            Some(RaftNode::Leader(ref mut node)) => node.on_receive_command(command),
+            _ => unreachable!()
+        }
     }
 }
 

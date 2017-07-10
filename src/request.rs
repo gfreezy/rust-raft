@@ -1,5 +1,5 @@
 use std::sync::mpsc::Sender;
-use ::rpc::{VoteReq, VoteResp, AppendEntriesReq, AppendEntriesResp, ServerId};
+use ::rpc::{VoteReq, VoteResp, AppendEntriesReq, AppendEntriesResp, ServerId, CommandReq, CommandResp};
 
 
 pub struct VoteRequest {
@@ -16,10 +16,16 @@ pub struct TickRequest {
     pub ret: Sender<()>,
 }
 
+pub struct CommandRequest {
+    pub data: CommandReq,
+    pub ret: Sender<CommandResp>,
+}
+
 pub enum Request {
     VoteRequest(VoteRequest),
     AppendEntriesRequest(AppendEntriesRequest),
     TickRequest(TickRequest),
-    VoteFor(ServerId, VoteReq),
-    AppendEntriesFor(ServerId, AppendEntriesReq),
+    CommandRequest(CommandRequest),
+    VoteFor(Vec<(ServerId, VoteReq)>),
+    AppendEntriesFor(Vec<(ServerId, AppendEntriesReq)>),
 }

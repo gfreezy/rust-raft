@@ -4,7 +4,7 @@ use std::sync::mpsc::Sender;
 use rand;
 use std::fmt;
 
-use ::rpc::{ServerId, Term, EntryIndex, Entry, VoteReq, VoteResp, AppendEntriesReq, AppendEntriesResp};
+use ::rpc::{ServerId, Term, EntryIndex, Entry, VoteReq, VoteResp, AppendEntriesReq, AppendEntriesResp, CommandReq, CommandResp};
 use ::entry_log::EntryLog;
 use ::store::Store;
 use ::request::Request;
@@ -249,18 +249,18 @@ impl<S: Store> Node<Candidate, S> {
     }
 
     fn send_vote_request(&self) {
-        for server in &self.peers() {
-            let req = VoteReq {
+        let votes = self.peers().into_iter().map(|server| {
+            (server, VoteReq {
                 term: self.current_term,
                 candidate_id: self.server_id.clone(),
                 last_log_index: self.log.last_index(),
                 last_log_term: self.log.last_entry_term()
-            };
-            self.trigger(Request::VoteFor(server.clone(), req));
-        }
+            })
+        }).collect::<Vec<(ServerId, VoteReq)>>();
+        self.trigger(Request::VoteFor(votes));
     }
 
-    pub fn on_receive_vote_request(&mut self, peer: &ServerId, resp: VoteResp) -> bool {
+    pub fn on_receive_vote_request(&mut self, peer: &ServerId, _req: VoteReq, resp: VoteResp) -> bool {
         if resp.term > self.current_term {
             self.current_term = resp.term;
             return true;
@@ -358,14 +358,12 @@ pub struct Leader {
 impl<S: Store> Node<Leader, S> {
     fn send_heartbeat(&mut self) {
         self.state.heartbeats.clear();
-        for s in &self.peers() {
-            self.send_append_entries_request(s);
-        }
+        self.send_append_entries_requests(self.peers());
     }
 
-    fn send_append_entries_request(&self, peer: &ServerId) {
+    fn create_append_entries_request(&self, peer: ServerId) -> (ServerId, AppendEntriesReq) {
         let last_log_index = self.log.last_index();
-        let next_index = self.state.next_index.get(peer).map_or(last_log_index + 1, |i| *i);
+        let next_index = self.state.next_index.get(&peer).map_or(last_log_index + 1, |i| *i);
         let entries = if last_log_index >= next_index {
             self.log.get_entries_since_index(next_index)
         } else {
@@ -381,17 +379,20 @@ impl<S: Store> Node<Leader, S> {
             prev_log_term: self.log.prev_last_entry_term(),
         };
 
-        self.trigger(Request::AppendEntriesFor(peer.clone(), req));
+        (peer, req)
     }
 
-    #[allow(dead_code)]
-    fn send_append_entries_requests(&self) {
-        for server in &self.peers() {
-            self.send_append_entries_request(server);
-        }
+    fn send_append_entries_requests(&self, peers: Vec<ServerId>) {
+        self.trigger(
+            Request::AppendEntriesFor(
+                peers.into_iter().map(|server| {
+                    self.create_append_entries_request(server)
+                }).collect()
+            )
+        );
     }
 
-    pub fn on_receive_heartbeat(&mut self, peer: &ServerId, resp: AppendEntriesResp) -> bool {
+    pub fn on_receive_append_entries_request(&mut self, peer: &ServerId, req: AppendEntriesReq, resp: AppendEntriesResp) -> bool {
         let last_log_index = self.log.last_index();
 
         if resp.term > self.current_term {
@@ -407,79 +408,58 @@ impl<S: Store> Node<Leader, S> {
             info!("{}: on_receive_append_entries_request: next index {}", peer, next_index);
 
             self.state.next_index.insert(peer.clone(), next_index.prev_or_zero());
-            self.send_append_entries_request(peer);
+            self.send_append_entries_requests(vec![peer.clone()]);
             return false;
         }
 
-        self.state.heartbeats.insert(peer.clone());
-        let up_to_date_count = self.state.heartbeats.len();
-        info!("update to date count: {}", up_to_date_count);
-        if up_to_date_count * 2 >= self.servers.len() {
-            self.state.heartbeat_sent_at = time::now_utc();
-            println!("heartbeat {:?} {:?}", time::now(), self.current_term);
-        }
-        false
-    }
-
-    pub fn on_receive_append_entries_request(&mut self, peer: &ServerId, resp: AppendEntriesResp) -> bool {
-        let last_log_index = self.log.last_index();
-
-        if resp.term > self.current_term {
-            self.current_term = resp.term;
-            info!("on_receive_append_entries_request: Leader Convert to follower");
-            return true;
-        }
-
-        // move next_index backwards by one
-        if !resp.success {
-            info!("{}: on_receive_append_entries_request: not success", peer);
-            let next_index = self.state.next_index.get(peer).map_or_else(|| last_log_index + 1, |i| *i);
-            info!("{}: on_receive_append_entries_request: next index {}", peer, next_index);
-
-            self.state.next_index.insert(peer.clone(), next_index.prev_or_zero());
-            self.send_append_entries_request(peer);
-            return false;
-        }
-
-        info!("on_receive_append_entries_request: before insert. last_log_index: {}", last_log_index);
-        self.state.match_index.insert(peer.to_owned(), last_log_index);
-        self.state.next_index.insert(peer.to_owned(), last_log_index + 1);
-
-        let mut index = self.commit_index + 1;
-        loop {
-            info!("in loop: index {}, ", index);
-            let up_to_date_count = self.state.match_index.values().filter(|&&match_index| match_index >= index).count();
-            info!("update to date count: {}", up_to_date_count);
-            if up_to_date_count * 2 < self.servers.len() {
-                break;
-            }
-
-            let term = self.log.get(index).and_then(|e| Some(e.term));
-            info!("term: {:?}, current_term: {:?}", term, self.current_term);
-            if term == Some(self.current_term) {
-                self.commit_index = index;
+        if req.entries.len() == 0 {
+            self.state.heartbeats.insert(peer.clone());
+            let up_to_date_count = self.state.heartbeats.len();
+            debug!("update to date count: {}", up_to_date_count);
+            if up_to_date_count * 2 >= self.servers.len() {
                 self.state.heartbeat_sent_at = time::now_utc();
-            } else {
-                break;
+                debug!("heartbeat {:?} {:?}", time::now(), self.current_term);
             }
+        } else {
+            info!("on_receive_append_entries_request: before insert. last_log_index: {}", last_log_index);
+            self.state.match_index.insert(peer.to_owned(), last_log_index);
+            self.state.next_index.insert(peer.to_owned(), last_log_index + 1);
 
-            index.incr();
+            let mut index = self.commit_index + 1;
+            loop {
+                info!("in loop: index {}, ", index);
+                let up_to_date_count = self.state.match_index.values().filter(|&&match_index| match_index >= index).count();
+                info!("update to date count: {}", up_to_date_count);
+                if up_to_date_count * 2 < self.servers.len() {
+                    break;
+                }
+
+                let term = self.log.get(index).and_then(|e| Some(e.term));
+                info!("term: {:?}, current_term: {:?}", term, self.current_term);
+                if term == Some(self.current_term) {
+                    self.commit_index = index;
+                    self.state.heartbeat_sent_at = time::now_utc();
+                } else {
+                    break;
+                }
+
+                index.incr();
+            }
         }
         false
     }
 
-    #[allow(dead_code)]
-    pub fn on_receive_command(&mut self, command: String) -> String {
+    pub fn on_receive_command(&mut self, command: CommandReq) -> CommandResp {
         let entry = Entry {
             term: self.current_term,
-            payload: command,
+            payload: command.0,
         };
         self.log.push(entry);
 
-        self.send_append_entries_requests();
+        self.send_append_entries_requests(self.peers());
 
         self.apply_log();
-        "ok".into()
+        CommandResp("ok".into())
     }
 }
 
@@ -519,7 +499,7 @@ impl<S: Store> NodeListener for Node<Leader, S> {
     fn on_clock_tick(&mut self) -> bool {
         let period_since_last_heartbeat = time::now_utc() - self.state.heartbeat_sent_at;
         if period_since_last_heartbeat.num_milliseconds() > HEARTBEAT_INTERVAL as i64 {
-            info!("leader: send heartbeat");
+            debug!("leader: send heartbeat");
             self.send_heartbeat()
         }
         false

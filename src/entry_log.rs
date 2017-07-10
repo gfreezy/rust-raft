@@ -27,7 +27,6 @@ impl EntryLog {
     }
 
     pub fn get_entries_since_index(&self, index: EntryIndex) -> Vec<Entry> {
-        info!("last_index: {}, get entries since: {}", self.last_index(), index);
         if index > self.last_index() {
             Vec::new()
         } else {
