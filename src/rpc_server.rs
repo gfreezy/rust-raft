@@ -37,18 +37,24 @@ fn on_request_vote(req: JSON<VoteReq>, sender: State<RequestSender>) -> JSON<Vot
 
 #[post("/raft/on_append_entries", data = "<req>")]
 fn on_append_entries(req: JSON<AppendEntriesReq>, sender: State<RequestSender>) -> JSON<AppendEntriesResp> {
-    info!("Received entries <----------------- {:?}", &req);
+    let data = req.into_inner();
+    let is_heartbeat = data.entries.len() == 0;
+    if !is_heartbeat {
+        info!("Received entries <----------------- {:?}", &data);
+    }
     let (ret_sender, ret_receiver) = channel::<AppendEntriesResp>();
     {
         let sender = sender.0.try_lock().unwrap();
         let req = Request::AppendEntriesRequest(AppendEntriesRequest {
-            data: req.into_inner(),
+            data: data,
             ret: ret_sender,
         });
         sender.send(req).expect("send append entries req");
     }
     let resp = ret_receiver.recv().expect("receive append entries resp");
-    info!("\tFinish request ---------------> {:?}", &resp);
+    if !is_heartbeat {
+        info!("\tFinish request ---------------> {:?}", &resp);
+    }
     JSON(resp)
 }
 
@@ -75,7 +81,7 @@ pub fn start_rocket(sender: Sender<Request>, port: u16) -> Rocket {
     let c = config::Config::build(config::Environment::Development)
         .port(port)
         .finalize().expect("build config");
-    custom(c, true)
+    custom(c, false)
         .mount("/", routes![on_request_vote, on_append_entries, on_receive_command])
         .manage(RequestSender::new(sender))
 }

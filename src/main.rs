@@ -16,7 +16,6 @@ extern crate rand;
 extern crate log;
 extern crate log4rs;
 extern crate timer;
-extern crate crossbeam;
 extern crate futures;
 extern crate hyper;
 extern crate tokio_core;
@@ -38,6 +37,7 @@ use std::sync::mpsc::channel;
 use std::thread;
 use raft_node::RaftStore;
 use request::Request;
+use std::collections::HashMap;
 
 const USAGE: &'static str = "
 rust-raft.
@@ -55,11 +55,15 @@ Options:
 ";
 
 
-struct Store;
+const ZERO_INDEX: u64 = 0;
+const NEXT_DATA_INDEX: u64 = 2;
+
+struct Store(HashMap<String, String>);
 
 impl store::Store for Store {
     fn apply(&mut self, entry: &rpc::Entry) {
-        println!("apply {}", entry.payload);
+        self.0.insert(entry.cmd.clone(), entry.payload.clone());
+        println!("cmd: {}, payload: {}", entry.cmd, entry.payload);
     }
 }
 
@@ -83,7 +87,8 @@ fn main() {
         .name("eventloop".into())
         .spawn(move || {
             let mut pool = connection_pool::ConnectionPool::new();
-            let mut store = RaftStore::new(server_id, Store, server_ids, sender2);
+            let s = Store(HashMap::new());
+            let mut store = RaftStore::new(server_id, s, server_ids, sender2);
 
             loop {
                 use raft_node::LiveRaftStore;

@@ -73,8 +73,8 @@ impl<S: Store> Node<Follower, S> {
             current_term: Term(0),
             voted_for: None,
             log: EntryLog::new(),
-            commit_index: EntryIndex(0),
-            last_applied_id: EntryIndex(0),
+            commit_index: EntryIndex(::NEXT_DATA_INDEX - 1),
+            last_applied_id: EntryIndex(::NEXT_DATA_INDEX - 1),
             state: Follower {
                 heartbeat_received_at: time::now_utc(),
             },
@@ -207,7 +207,9 @@ impl<S: Store> NodeListener for Node<Follower, S> {
 
         self.apply_log();
 
-        info!("{} term: {}, on append entries", self, self.current_term);
+        if req.entries.len() > 0 {
+            info!("{} term: {}, on append entries", self, self.current_term);
+        }
 
         (AppendEntriesResp {
             term: self.current_term,
@@ -375,8 +377,8 @@ impl<S: Store> Node<Leader, S> {
             entries: entries,
             leader_commit: self.commit_index,
             leader_id: self.server_id.clone(),
-            prev_log_index: self.log.prev_last_index(),
-            prev_log_term: self.log.prev_last_entry_term(),
+            prev_log_index: self.log.prev_index(next_index),
+            prev_log_term: self.log.prev_entry_term(next_index),
         };
 
         (peer, req)
@@ -439,6 +441,7 @@ impl<S: Store> Node<Leader, S> {
                 if term == Some(self.current_term) {
                     self.commit_index = index;
                     self.state.heartbeat_sent_at = time::now_utc();
+                    self.apply_log();
                 } else {
                     break;
                 }
@@ -452,13 +455,12 @@ impl<S: Store> Node<Leader, S> {
     pub fn on_receive_command(&mut self, command: CommandReq) -> CommandResp {
         let entry = Entry {
             term: self.current_term,
-            payload: command.0,
+            cmd: command.cmd,
+            payload: command.data,
         };
         self.log.push(entry);
-
         self.send_append_entries_requests(self.peers());
 
-        self.apply_log();
         CommandResp("ok".into())
     }
 }
@@ -521,7 +523,7 @@ impl<S: Store> From<Node<Candidate, S>> for Node<Leader, S> {
         let match_index = {
             let mut map = HashMap::new();
             for s in &val.servers {
-                map.insert(s.clone(), EntryIndex(0));
+                map.insert(s.clone(), EntryIndex(::ZERO_INDEX));
             }
             map
         };
@@ -546,6 +548,7 @@ impl<S: Store> From<Node<Candidate, S>> for Node<Leader, S> {
 
         node.send_heartbeat();
         info!("from Candidate to Leader");
+        println!("I'm Leader");
         node
     }
 }

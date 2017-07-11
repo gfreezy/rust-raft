@@ -47,7 +47,7 @@ impl<S: Store> RaftStore<S> {
                 node.on_receive_vote_request(peer, req, resp)
             }
             _ => {
-                unreachable!()
+                false
             }
         };
 
@@ -74,7 +74,7 @@ impl<S: Store> RaftStore<S> {
                 node.on_receive_append_entries_request(peer, req, resp)
             }
             _ => {
-                unreachable!()
+                false
             }
         };
 
@@ -94,7 +94,7 @@ impl<S: Store> RaftStore<S> {
     pub fn on_receive_command(&mut self, command: CommandReq) -> CommandResp {
         match self.0 {
             Some(RaftNode::Leader(ref mut node)) => node.on_receive_command(command),
-            _ => unreachable!()
+            _ => CommandResp("error".to_string())
         }
     }
 }

@@ -2,9 +2,13 @@ appenders:
   stdout:
     kind: console
     encoder:
-      pattern: "{d} {T} {l}:{f}:{L} {m}{n}"
+      pattern: "{d} [{M}:{L} {T}] {l}: {m}{n}"
 
 root:
   level: error
   appenders:
     - stdout
+
+loggers:
+  rust_raft:
+    level: info

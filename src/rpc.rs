@@ -41,10 +41,10 @@ impl EntryIndex {
     }
 
     pub fn prev_or_zero(&self) -> EntryIndex {
-        if self.0 >= 1 {
+        if self.0 > ::ZERO_INDEX {
             EntryIndex(self.0 - 1)
         } else {
-            EntryIndex(0)
+            EntryIndex(::ZERO_INDEX)
         }
     }
 }
@@ -55,12 +55,35 @@ impl fmt::Display for EntryIndex {
     }
 }
 
+impl std::ops::Add<EntryIndex> for EntryIndex {
+    type Output = EntryIndex;
+    fn add(self, rhs: EntryIndex) -> Self::Output {
+        EntryIndex(self.0 + rhs.0)
+    }
+}
+
+
 impl std::ops::Add<usize> for EntryIndex {
     type Output = EntryIndex;
     fn add(self, rhs: usize) -> Self::Output {
         EntryIndex(self.0 + rhs as u64)
     }
 }
+
+impl std::ops::Sub<EntryIndex> for EntryIndex {
+    type Output = EntryIndex;
+    fn sub(self, rhs: EntryIndex) -> Self::Output {
+        EntryIndex(self.0 - rhs.0)
+    }
+}
+
+
+impl From<EntryIndex> for usize {
+    fn from(f: EntryIndex) -> Self {
+        f.0 as usize
+    }
+}
+
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct VoteReq {
@@ -81,6 +104,7 @@ pub struct VoteResp {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Entry {
     pub term: Term,
+    pub cmd: String,
     pub payload: String,
 }
 
@@ -102,8 +126,12 @@ pub struct AppendEntriesResp {
     pub success: bool,
 }
 
+
 #[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Hash, Clone)]
-pub struct CommandReq(pub String);
+pub struct CommandReq {
+    pub cmd: String,
+    pub data: String,
+}
 
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Hash, Clone)]
