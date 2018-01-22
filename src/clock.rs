@@ -18,6 +18,6 @@ impl Clock {
             });
             self.0.send(req).expect("send vote req");
         }
-        let _ = ret_receiver.recv().expect("receive tick resp");
+        ret_receiver.recv().expect("receive tick resp");
     }
 }

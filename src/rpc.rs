@@ -1,6 +1,7 @@
 use std;
 use std::fmt;
 
+
 #[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Hash, Clone)]
 pub struct ServerId(pub String);
 
@@ -102,10 +103,23 @@ pub struct VoteResp {
 
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct EntryDataPayload {
+    pub cmd: String,
+    pub payload: String
+}
+
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub enum EntryPayload {
+    Data(EntryDataPayload),
+    Config(Vec<ServerId>),
+}
+
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Entry {
     pub term: Term,
-    pub cmd: String,
-    pub payload: String,
+    pub payload: EntryPayload,
 }
 
 
@@ -136,3 +150,15 @@ pub struct CommandReq {
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Hash, Clone)]
 pub struct CommandResp(pub String);
+
+
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Hash, Clone)]
+pub struct ConfigurationReq {
+    pub servers: Vec<ServerId>
+}
+
+
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Hash, Clone)]
+pub struct ConfigurationResp {
+    pub success: bool
+}

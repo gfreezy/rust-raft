@@ -1,4 +1,4 @@
-use ::rpc::{Entry, EntryIndex, Term};
+use ::rpc::{Entry, EntryIndex, Term, EntryPayload, EntryDataPayload};
 
 
 #[derive(Debug)]
@@ -15,13 +15,17 @@ impl EntryLog {
             entries: vec![
                 Entry {
                     term: Term(1),
-                    cmd: "".into(),
-                    payload: "".into(),
+                    payload: EntryPayload::Data(EntryDataPayload {
+                        cmd: "".into(),
+                        payload: "".into(),
+                    })
                 },
                 Entry {
                     term: Term(1),
-                    cmd: "".into(),
-                    payload: "".into(),
+                    payload: EntryPayload::Data(EntryDataPayload {
+                        cmd: "".into(),
+                        payload: "".into(),
+                    })
                 }
             ]
         }
@@ -48,7 +52,7 @@ impl EntryLog {
         if index > self.last_index() {
             Vec::new()
         } else {
-            self.entries[self.real_index(index)..].iter().cloned().collect::<Vec<Entry>>()
+            self.entries[self.real_index(index)..].to_vec()
         }
     }
 

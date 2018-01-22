@@ -1,8 +1,11 @@
 use std::sync::mpsc::Sender;
 use std::fmt;
 
-use ::node::{Node, Leader, Follower, Candidate};
-use ::rpc::{ServerId, AppendEntriesReq, AppendEntriesResp, VoteReq, VoteResp, CommandResp, CommandReq};
+use ::node::Node;
+use ::leader::Leader;
+use ::follower::Follower;
+use ::candidate::Candidate;
+use ::rpc::{ServerId, AppendEntriesReq, AppendEntriesResp, VoteReq, VoteResp, CommandResp, CommandReq, ConfigurationReq, ConfigurationResp};
 use ::store::Store;
 use ::node::NodeListener;
 use ::request;
@@ -101,27 +104,28 @@ impl<S: Store> RaftStore<S> {
 
 
 pub trait LiveRaftStore {
-    fn on_append_entries(&mut self, req: &AppendEntriesReq) -> AppendEntriesResp;
-    fn on_request_vote(&mut self, req: &VoteReq) -> VoteResp;
+    fn on_append_entries(&mut self, req: AppendEntriesReq, remote_addr: ServerId) -> AppendEntriesResp;
+    fn on_request_vote(&mut self, req: VoteReq, remote_addr: ServerId) -> VoteResp;
+    fn on_update_configuration(&mut self, req: ConfigurationReq, remote_addr: ServerId) -> ConfigurationResp;
     fn on_clock_tick(&mut self);
 }
 
 
 impl<S: Store> LiveRaftStore for RaftStore<S> {
-    fn on_request_vote(&mut self, req: &VoteReq) -> VoteResp {
+    fn on_request_vote(&mut self, req: VoteReq, remote_addr: ServerId) -> VoteResp {
         use self::RaftNode::*;
 
         let mut raft_node = self.0.take().unwrap();
 
         let (resp, to_follower) = match raft_node {
             Leader(ref mut node) => {
-                node.on_request_vote(req)
+                node.on_request_vote(req, remote_addr)
             }
             Follower(ref mut node) => {
-                node.on_request_vote(req)
+                node.on_request_vote(req, remote_addr)
             }
             Candidate(ref mut node) => {
-                node.on_request_vote(req)
+                node.on_request_vote(req, remote_addr)
             }
         };
 
@@ -140,19 +144,19 @@ impl<S: Store> LiveRaftStore for RaftStore<S> {
         resp
     }
 
-    fn on_append_entries(&mut self, req: &AppendEntriesReq) -> AppendEntriesResp {
+    fn on_append_entries(&mut self, req: AppendEntriesReq, remote_addr: ServerId) -> AppendEntriesResp {
         let mut raft_node = self.0.take().unwrap();
         use self::RaftNode::*;
 
         let (resp, to_follower) = match raft_node {
             Leader(ref mut node) => {
-                node.on_append_entries(req)
+                node.on_append_entries(req, remote_addr)
             }
             Follower(ref mut node) => {
-                node.on_append_entries(req)
+                node.on_append_entries(req, remote_addr)
             }
             Candidate(ref mut node) => {
-                node.on_append_entries(req)
+                node.on_append_entries(req, remote_addr)
             }
         };
 
@@ -169,6 +173,22 @@ impl<S: Store> LiveRaftStore for RaftStore<S> {
         );
 
         resp
+    }
+
+    fn on_update_configuration(&mut self, req: ConfigurationReq, remote_addr: ServerId) -> ConfigurationResp {
+        let mut raft_node = self.0.take().unwrap();
+        use self::RaftNode::*;
+
+        if let Leader(ref mut node) = raft_node {
+            node.on_update_configuration(req, remote_addr);
+            ConfigurationResp {
+                success: true
+            }
+        } else {
+            ConfigurationResp {
+                success: false
+            }
+        }
     }
 
     fn on_clock_tick(&mut self) {
@@ -177,7 +197,7 @@ impl<S: Store> LiveRaftStore for RaftStore<S> {
         self.0 = Some(match raft_node {
             Leader(mut node) => {
                 let change_state = node.on_clock_tick();
-                assert!(change_state == false);
+                assert!(!change_state);
                 RaftNode::Leader(node)
             }
             Follower(mut node) => {

@@ -1,10 +1,11 @@
 use std::sync::Mutex;
+use std::net::SocketAddr;
 use std::sync::mpsc::{Sender, channel};
-use rocket_contrib::json::JSON;
+use rocket_contrib::Json;
 use rocket::{State, Rocket, custom, config};
 
-use ::rpc::{AppendEntriesReq, AppendEntriesResp, VoteReq, VoteResp, CommandReq, CommandResp};
-use ::request::{Request, VoteRequest, AppendEntriesRequest, CommandRequest};
+use ::rpc::{AppendEntriesReq, AppendEntriesResp, VoteReq, VoteResp, CommandReq, CommandResp, ServerId, ConfigurationReq, ConfigurationResp};
+use ::request::{Request, VoteRequest, AppendEntriesRequest, CommandRequest, UpdateConfigurationRequest};
 
 
 pub struct RequestSender(Mutex<Sender<Request>>);
@@ -16,14 +17,15 @@ impl RequestSender {
 }
 
 
-#[post("/raft/on_request_vote", data = "<req>")]
-fn on_request_vote(req: JSON<VoteReq>, sender: State<RequestSender>) -> JSON<VoteResp> {
-    info!("Received Vote <----------------- {:?}", &req);
+#[post("/raft/on_request_vote", data = "<vote_req>")]
+fn on_request_vote(vote_req: Json<VoteReq>, sender: State<RequestSender>, remote_addr: SocketAddr) -> Json<VoteResp> {
+    info!("Received Vote <----------------- {:?}", &vote_req);
     let (ret_sender, ret_receiver) = channel::<VoteResp>();
     {
         let sender = sender.0.try_lock().unwrap();
         let req = Request::VoteRequest(VoteRequest {
-            data: req.into_inner(),
+            data: vote_req.into_inner(),
+            remote_addr: ServerId(format!("{}:{}", remote_addr.ip(), remote_addr.port())),
             ret: ret_sender,
         });
         sender.send(req).expect("send vote req");
@@ -31,14 +33,14 @@ fn on_request_vote(req: JSON<VoteReq>, sender: State<RequestSender>) -> JSON<Vot
     info!("\tReceiving vote resp");
     let resp = ret_receiver.recv().expect("receive vote resp");
     info!("\tFinish request ---------------> {:?}", &resp);
-    JSON(resp)
+    Json(resp)
 }
 
 
 #[post("/raft/on_append_entries", data = "<req>")]
-fn on_append_entries(req: JSON<AppendEntriesReq>, sender: State<RequestSender>) -> JSON<AppendEntriesResp> {
+fn on_append_entries(req: Json<AppendEntriesReq>, sender: State<RequestSender>, remote_addr: SocketAddr) -> Json<AppendEntriesResp> {
     let data = req.into_inner();
-    let is_heartbeat = data.entries.len() == 0;
+    let is_heartbeat = data.entries.is_empty();
     if !is_heartbeat {
         info!("Received entries <----------------- {:?}", &data);
     }
@@ -46,7 +48,8 @@ fn on_append_entries(req: JSON<AppendEntriesReq>, sender: State<RequestSender>) 
     {
         let sender = sender.0.try_lock().unwrap();
         let req = Request::AppendEntriesRequest(AppendEntriesRequest {
-            data: data,
+            data,
+            remote_addr: ServerId(format!("{}:{}", remote_addr.ip(), remote_addr.port())),
             ret: ret_sender,
         });
         sender.send(req).expect("send append entries req");
@@ -55,26 +58,46 @@ fn on_append_entries(req: JSON<AppendEntriesReq>, sender: State<RequestSender>) 
     if !is_heartbeat {
         info!("\tFinish request ---------------> {:?}", &resp);
     }
-    JSON(resp)
+    Json(resp)
+}
+
+
+#[post("/raft/on_update_configuration", data = "<req>")]
+fn on_update_config(req: Json<ConfigurationReq>, sender: State<RequestSender>, remote_addr: SocketAddr) -> Json<ConfigurationResp> {
+    let data = req.into_inner();
+    let (ret_sender, ret_receiver) = channel::<ConfigurationResp>();
+    {
+        let sender = sender.0.try_lock().unwrap();
+        let req = Request::UpdateConfiguration(UpdateConfigurationRequest{
+            data,
+            remote_addr: ServerId(format!("{}:{}", remote_addr.ip(), remote_addr.port())),
+            ret: ret_sender,
+        });
+        sender.send(req).expect("send update configuration req");
+    }
+    let resp = ret_receiver.recv().expect("receive update configuration resp");
+    Json(resp)
 }
 
 
 #[post("/data/on_receive_command", data = "<req>")]
-fn on_receive_command(req: JSON<CommandReq>, sender: State<RequestSender>) -> JSON<CommandResp> {
+fn on_receive_command(req: Json<CommandReq>, sender: State<RequestSender>, remote_addr: SocketAddr) -> Json<CommandResp> {
     info!("Received command <----------------- {:?}", &req);
     let (ret_sender, ret_receiver) = channel::<CommandResp>();
     {
         let sender = sender.0.try_lock().unwrap();
         let req = Request::CommandRequest(CommandRequest{
             data: req.into_inner(),
+            remote_addr: ServerId(format!("{}:{}", remote_addr.ip(), remote_addr.port())),
             ret: ret_sender,
         });
         sender.send(req).expect("send command req");
     }
     let resp = ret_receiver.recv().expect("receive command resp");
     info!("\tFinish request ---------------> {:?}", &resp);
-    JSON(resp)
+    Json(resp)
 }
+
 
 
 pub fn start_rocket(sender: Sender<Request>, port: u16) -> Rocket {
@@ -82,6 +105,6 @@ pub fn start_rocket(sender: Sender<Request>, port: u16) -> Rocket {
         .port(port)
         .finalize().expect("build config");
     custom(c, false)
-        .mount("/", routes![on_request_vote, on_append_entries, on_receive_command])
+        .mount("/", routes![on_request_vote, on_append_entries, on_receive_command, on_update_config])
         .manage(RequestSender::new(sender))
 }

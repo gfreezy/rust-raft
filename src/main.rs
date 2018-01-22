@@ -1,27 +1,31 @@
 #![feature(plugin)]
+#![feature(nll)]
 #![plugin(rocket_codegen)]
 #![recursion_limit = "1024"]
 
+extern crate docopt;
 #[macro_use]
 extern crate error_chain;
+extern crate futures;
+extern crate hyper;
+#[macro_use]
+extern crate log;
+extern crate log4rs;
+extern crate rand;
 extern crate rocket;
 extern crate rocket_contrib;
 #[macro_use]
 extern crate serde_derive;
 extern crate serde_json;
 extern crate time;
-extern crate docopt;
-extern crate rand;
-#[macro_use]
-extern crate log;
-extern crate log4rs;
 extern crate timer;
-extern crate futures;
-extern crate hyper;
 extern crate tokio_core;
 
 mod rpc;
 mod node;
+mod follower;
+mod candidate;
+mod leader;
 mod raft_node;
 mod rpc_server;
 mod entry_log;
@@ -39,7 +43,7 @@ use raft_node::RaftStore;
 use request::Request;
 use std::collections::HashMap;
 
-const USAGE: &'static str = "
+const USAGE: &str = "
 rust-raft.
 
 Usage:
@@ -54,7 +58,6 @@ Options:
   --peers=<peers>   Peers to connect to.
 ";
 
-
 const ZERO_INDEX: u64 = 0;
 const NEXT_DATA_INDEX: u64 = 2;
 
@@ -62,11 +65,17 @@ struct Store(HashMap<String, String>);
 
 impl store::Store for Store {
     fn apply(&mut self, entry: &rpc::Entry) {
-        self.0.insert(entry.cmd.clone(), entry.payload.clone());
-        println!("cmd: {}, payload: {}", entry.cmd, entry.payload);
+        match entry.payload {
+            rpc::EntryPayload::Data(ref entry) => {
+                self.0.insert(entry.cmd.clone(), entry.payload.clone());
+                println!("cmd: {}, payload: {}", entry.cmd, entry.payload);
+            }
+            rpc::EntryPayload::Config(ref servers) => {
+                println!("config: {:?}", servers);
+            }
+        }
     }
 }
-
 
 fn main() {
     log4rs::init_file("log4rs.yml", Default::default()).unwrap();
@@ -100,12 +109,19 @@ fn main() {
                         let _ = req.ret.send(());
                     }
                     Request::VoteRequest(vote_req) => {
-                        let resp = store.on_request_vote(&vote_req.data);
+                        let resp = store.on_request_vote(vote_req.data, vote_req.remote_addr);
                         let _ = vote_req.ret.send(resp);
                     }
                     Request::AppendEntriesRequest(append_req) => {
-                        let resp = store.on_append_entries(&append_req.data);
+                        let resp = store.on_append_entries(append_req.data, append_req.remote_addr);
                         let _ = append_req.ret.send(resp);
+                    }
+                    Request::UpdateConfiguration(update_config_req) => {
+                        let resp = store.on_update_configuration(
+                            update_config_req.data,
+                            update_config_req.remote_addr,
+                        );
+                        let _ = update_config_req.ret.send(resp);
                     }
                     Request::CommandRequest(command_req) => {
                         let resp = store.on_receive_command(command_req.data);
@@ -127,7 +143,8 @@ fn main() {
                     }
                 }
             }
-        }).expect("unwrap eventloop thread");
+        })
+        .expect("unwrap eventloop thread");
 
     let sender3 = sender.clone();
     let _ = thread::Builder::new()
